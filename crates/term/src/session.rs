@@ -18,7 +18,7 @@ use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config as TermConfig, Osc52, TermMode};
-use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor, Rgb, StdSyncHandler};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::integration;
@@ -108,6 +108,8 @@ pub struct SessionOptions {
     pub shell_integration: bool,
     /// Let programs copy to the clipboard with OSC 52. Paste through OSC 52 is never allowed.
     pub osc52_copy: bool,
+    /// Cursor shape until a program sets its own.
+    pub cursor_shape: CursorShape,
 }
 
 impl Default for SessionOptions {
@@ -120,6 +122,7 @@ impl Default for SessionOptions {
             scrollback: 10_000,
             shell_integration: true,
             osc52_copy: false,
+            cursor_shape: CursorShape::Block,
         }
     }
 }
@@ -346,6 +349,24 @@ pub struct PtySession {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pid: Option<u32>,
     shell: Shell,
+    osc52_copy: bool,
+}
+
+fn term_config(scrollback: usize, cursor_shape: CursorShape, osc52_copy: bool) -> TermConfig {
+    TermConfig {
+        scrolling_history: scrollback,
+        // Blinking is the view's job (the cursor_blink setting), so the style never blinks.
+        default_cursor_style: CursorStyle {
+            shape: cursor_shape,
+            blinking: false,
+        },
+        osc52: if osc52_copy {
+            Osc52::OnlyCopy
+        } else {
+            Osc52::Disabled
+        },
+        ..TermConfig::default()
+    }
 }
 
 impl std::fmt::Debug for PtySession {
@@ -407,15 +428,7 @@ impl PtySession {
             input: input_tx,
         });
 
-        let config = TermConfig {
-            scrolling_history: options.scrollback,
-            osc52: if options.osc52_copy {
-                Osc52::OnlyCopy
-            } else {
-                Osc52::Disabled
-            },
-            ..TermConfig::default()
-        };
+        let config = term_config(options.scrollback, options.cursor_shape, options.osc52_copy);
         let proxy = EventProxy {
             shared: shared.clone(),
         };
@@ -471,7 +484,14 @@ impl PtySession {
             killer: Mutex::new(killer),
             pid,
             shell,
+            osc52_copy: options.osc52_copy,
         })
+    }
+
+    /// Changes the scrollback size and default cursor shape of a running session.
+    pub fn set_defaults(&self, scrollback: usize, cursor_shape: CursorShape) {
+        let config = term_config(scrollback, cursor_shape, self.osc52_copy);
+        self.with_term(|term| term.set_options(config));
     }
 
     /// Event stream for this session. Clones share one queue, so keep a single consumer.

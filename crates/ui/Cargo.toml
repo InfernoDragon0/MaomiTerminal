@@ -9,6 +9,8 @@ license.workspace = true
 [dependencies]
 gpui-kit.workspace = true
 maomi-term.workspace = true
+maomi-config.workspace = true
+async-channel.workspace = true
 anyhow.workspace = true
 sysinfo.workspace = true
 tracing.workspace = true

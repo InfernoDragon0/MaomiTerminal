@@ -3903,6 +3903,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
@@ -3924,7 +3925,9 @@ name = "maomi-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "gpui-kit",
+ "maomi-config",
  "maomi-term",
  "sysinfo",
  "tracing",

@@ -8,6 +8,7 @@ mod color;
 mod component;
 mod fonts;
 mod palette;
+pub mod settings;
 pub mod shell;
 mod terminal;
 mod terminal_view;
@@ -51,6 +52,22 @@ impl Skin {
         }
     }
 
+    /// Name in the config file.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Aurora => "aurora",
+            Self::Onyx => "onyx",
+            Self::Mochi => "mochi",
+        }
+    }
+
+    /// Parses a config name; case is ignored.
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::Aurora, Self::Onyx, Self::Mochi]
+            .into_iter()
+            .find(|s| s.key().eq_ignore_ascii_case(key))
+    }
+
     /// False for skins that only ship a dark variant.
     pub const fn has_light(self) -> bool {
         !matches!(self, Self::Mochi)
@@ -72,6 +89,21 @@ impl Mode {
             Self::Dark => Self::Light,
             Self::Light => Self::Dark,
         }
+    }
+
+    /// Name in the config file.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+
+    /// Parses a config name; case is ignored.
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::Dark, Self::Light]
+            .into_iter()
+            .find(|m| m.key().eq_ignore_ascii_case(key))
     }
 }
 
@@ -143,16 +175,20 @@ impl Theme {
     }
 }
 
-/// Makes `theme` the current theme and applies it to gpui-component.
+/// Makes `theme` the current theme, applies it to gpui-component and saves it in the config.
 pub fn set_theme(cx: &mut App, theme: Theme) {
     cx.set_global(CurrentTheme(theme));
     apply(theme, cx);
+    settings::store_theme(theme, cx);
 }
 
-/// Registers the skin/mode actions and their keybindings, and applies the default theme.
+/// Installs `config`, registers the skin/mode actions and their keybindings, and applies the
+/// configured theme.
 ///
 /// Call after `gpui_kit::init(cx)`.
-pub fn init(cx: &mut App) {
+pub fn init(config: maomi_config::Config, cx: &mut App) {
+    settings::install(config, cx);
+    let theme = settings::theme_from(&settings::config(cx), cx);
     fonts::load(cx);
     cx.bind_keys(terminal_view::key_bindings());
     shell::init(cx);
@@ -169,7 +205,7 @@ pub fn init(cx: &mut App) {
             set_theme(cx, theme.with_toggled_mode());
         }
     });
-    set_theme(cx, Theme::default());
+    set_theme(cx, theme);
 }
 
 /// Holds the current [`Theme`] as a GPUI global.
@@ -342,5 +378,17 @@ mod tests {
             assert_eq!(t.primary, p.accent.to_hsla());
             assert_eq!(t.danger, p.err.to_hsla());
         }
+    }
+
+    #[test]
+    fn config_keys_round_trip() {
+        for skin in SKINS {
+            assert_eq!(Skin::from_key(skin.key()), Some(skin));
+        }
+        for mode in MODES {
+            assert_eq!(Mode::from_key(mode.key()), Some(mode));
+        }
+        assert_eq!(Skin::from_key("ONYX"), Some(Skin::Onyx));
+        assert_eq!(Skin::from_key("neon"), None);
     }
 }

@@ -9,17 +9,19 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, IconName, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, Axis, Context, Entity, EntityId, Focusable as _,
+    AnyElement, App, AppContext as _, Axis, Context, Entity, EntityId, Focusable as _,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PromptLevel, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
-    linear_color_stop, linear_gradient, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, WindowBounds,
+    div, linear_color_stop, linear_gradient, px,
 };
+use maomi_config::{PaneLayout, TabLayout, WindowLayout};
 use maomi_term::{PtySession, SessionOptions};
 
 use super::pane::{Pane, PaneEvent, display_path};
+use super::settings_page::SettingsPage;
 use super::tree::{Direction, PaneTree};
 use super::{LaunchOptions, actions::*};
-use crate::{Mode, Palette, Skin, Theme, set_theme};
+use crate::{Mode, Palette, Skin, Theme, set_theme, settings};
 
 struct Tab {
     id: u64,
@@ -36,6 +38,10 @@ pub struct Workspace {
     /// The user confirmed closing the window although commands were running.
     close_confirmed: bool,
     pane_subscriptions: HashMap<EntityId, [Subscription; 2]>,
+    /// The settings page replaces the dock and panes while shown; created on first open.
+    show_settings: bool,
+    settings_page: Option<Entity<SettingsPage>>,
+    _observers: Vec<Subscription>,
 }
 
 impl Workspace {
@@ -48,8 +54,20 @@ impl Workspace {
             next_id: 0,
             close_confirmed: false,
             pane_subscriptions: HashMap::new(),
+            show_settings: false,
+            settings_page: None,
+            _observers: Vec::new(),
         };
-        this.new_tab(window, cx);
+        this._observers = vec![
+            cx.observe_global_in::<settings::Settings>(window, |ws, _, cx| ws.apply_settings(cx)),
+            cx.observe_window_appearance(window, |_, _, cx| settings::sync_system_theme(cx)),
+        ];
+        if let Some(layout) = this.launch.restore.take() {
+            this.restore(layout, window, cx);
+        }
+        if this.tabs.is_empty() {
+            this.new_tab(window, cx);
+        }
         // Dev switch: open the first tab with several panes (2 = side by side, 3-4 = grid).
         let extra = this.launch.panes.saturating_sub(1).min(3);
         for i in 0..extra {
@@ -66,11 +84,12 @@ impl Workspace {
             };
             this.split(&target, axis, window, cx);
         }
-        if let Some(first) = this.tabs.first().map(|t| t.tree.leaves()[0].clone()) {
-            this.focus_pane(&first, window, cx);
+        if let Some(focused) = this.active_tab().map(|t| t.focused.clone()) {
+            this.focus_pane(&focused, window, cx);
         }
 
         let workspace = cx.entity().downgrade();
+        super::register_workspace(window.window_handle(), workspace.clone(), cx);
         window.on_window_should_close(cx, move |window, cx| {
             workspace
                 .update(cx, |ws, cx| ws.should_close_window(window, cx))
@@ -79,15 +98,115 @@ impl Workspace {
         this
     }
 
+    /// Rebuilds saved tabs and splits; panes whose folder is gone start in the default one.
+    fn restore(&mut self, layout: WindowLayout, window: &mut Window, cx: &mut Context<Self>) {
+        self.dock_open = layout.dock_open;
+        for tab in layout.tabs {
+            let Some(tree) = self.build_tree(tab.root, window, cx) else {
+                continue;
+            };
+            let leaves = tree.leaves();
+            self.next_id += 1;
+            self.tabs.push(Tab {
+                id: self.next_id,
+                focused: leaves[tab.focused.min(leaves.len() - 1)].clone(),
+                tree,
+            });
+        }
+        self.active = layout.active_tab.min(self.tabs.len().saturating_sub(1));
+    }
+
+    fn build_tree(
+        &mut self,
+        node: PaneLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<PaneTree<Entity<Pane>>> {
+        match node {
+            PaneLayout::Pane { cwd } => {
+                let cwd = cwd.filter(|dir| dir.is_dir());
+                self.spawn_pane(cwd, window, cx).map(PaneTree::Leaf)
+            }
+            PaneLayout::Split {
+                horizontal,
+                children,
+            } => {
+                let mut children: Vec<_> = children
+                    .into_iter()
+                    .filter_map(|child| self.build_tree(child, window, cx))
+                    .collect();
+                if children.len() <= 1 {
+                    return children.pop();
+                }
+                self.next_id += 1;
+                Some(PaneTree::Split {
+                    id: self.next_id,
+                    axis: if horizontal {
+                        Axis::Horizontal
+                    } else {
+                        Axis::Vertical
+                    },
+                    children,
+                })
+            }
+        }
+    }
+
+    /// This window's tabs, splits, pane folders and bounds, for the next start.
+    pub(crate) fn snapshot(&self, window: &Window, cx: &App) -> WindowLayout {
+        fn node(tree: &PaneTree<Entity<Pane>>, cx: &App) -> PaneLayout {
+            match tree {
+                PaneTree::Leaf(pane) => PaneLayout::Pane {
+                    cwd: pane.read(cx).cwd().map(PathBuf::from),
+                },
+                PaneTree::Split { axis, children, .. } => PaneLayout::Split {
+                    horizontal: *axis == Axis::Horizontal,
+                    children: children.iter().map(|c| node(c, cx)).collect(),
+                },
+            }
+        }
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|tab| TabLayout {
+                root: node(&tab.tree, cx),
+                focused: tab
+                    .tree
+                    .leaves()
+                    .iter()
+                    .position(|p| *p == tab.focused)
+                    .unwrap_or(0),
+            })
+            .collect();
+        let (bounds, maximized) = match window.window_bounds() {
+            WindowBounds::Windowed(b) => (b, false),
+            WindowBounds::Maximized(b) | WindowBounds::Fullscreen(b) => (b, true),
+        };
+        WindowLayout {
+            bounds: Some(maomi_config::WindowBounds {
+                x: bounds.origin.x.as_f32(),
+                y: bounds.origin.y.as_f32(),
+                width: bounds.size.width.as_f32(),
+                height: bounds.size.height.as_f32(),
+            }),
+            maximized,
+            dock_open: self.dock_open,
+            active_tab: self.active,
+            tabs,
+        }
+    }
+
     fn spawn_pane(
         &mut self,
         cwd: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<Pane>> {
+        let config = settings::config(cx);
+        let base = settings::session_options(&config);
         let options = SessionOptions {
-            cwd,
-            ..SessionOptions::default()
+            cwd: cwd.or_else(|| base.cwd.clone()),
+            ..base
         };
         let session = match PtySession::spawn(options.clone()) {
             Ok(session) => session,
@@ -101,10 +220,9 @@ impl Workspace {
         }
         let pane = cx.new(|cx| Pane::new(session, options, window, cx));
         let smooth = self.launch.smooth_scroll;
-        pane.read(cx)
-            .terminal()
-            .clone()
-            .update(cx, |view, cx| view.set_smooth_scroll(smooth, cx));
+        pane.read(cx).terminal().clone().update(cx, |view, cx| {
+            settings::apply_to_view(view, &config, smooth, cx);
+        });
 
         let events = cx.subscribe_in(&pane, window, |ws, pane, event: &PaneEvent, window, cx| {
             ws.on_pane_event(pane.clone(), event, window, cx)
@@ -171,7 +289,40 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Pushes the current config into every pane of this window.
+    fn apply_settings(&mut self, cx: &mut Context<Self>) {
+        let config = settings::config(cx);
+        let smooth = self.launch.smooth_scroll;
+        for tab in &self.tabs {
+            for pane in tab.tree.leaves() {
+                pane.read(cx).terminal().clone().update(cx, |view, cx| {
+                    settings::apply_to_view(view, &config, smooth, cx);
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_settings {
+            if let Some(pane) = self.focused_pane() {
+                self.focus_pane(&pane, window, cx);
+            }
+            return;
+        }
+        let page = self
+            .settings_page
+            .get_or_insert_with(|| cx.new(|cx| SettingsPage::new(window, cx)))
+            .clone();
+        self.show_settings = true;
+        // Keys go to the page, not the hidden terminal.
+        page.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    /// Focusing a pane always shows the terminals (tab clicks, new tabs, splits).
     fn focus_pane(&mut self, pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_settings = false;
         if let Some(tab) = self.tab_of(pane) {
             self.active = tab;
             self.tabs[tab].focused = pane.clone();
@@ -272,7 +423,11 @@ impl Workspace {
     fn remove_tab(&mut self, tab: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.tabs.remove(tab);
         if self.tabs.is_empty() {
-            // Last tab gone: the window goes too (its panes have already been confirmed).
+            // Last tab gone: the window goes too (its panes have already been confirmed). When it
+            // is the last window the user closed everything, so the next start opens fresh.
+            if cx.windows().len() == 1 {
+                super::save_layout(Vec::new());
+            }
             self.close_confirmed = true;
             window.remove_window();
             return;
@@ -311,6 +466,11 @@ impl Workspace {
     fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.close_confirmed {
             return true;
+        }
+        // The last window closing ends the app: remember it for the next start. Saved before the
+        // busy prompt, so a cancelled close only leaves a slightly early save behind.
+        if cx.windows().len() == 1 {
+            super::save_layout(vec![self.snapshot(window, cx)]);
         }
         let busy = self
             .tabs
@@ -596,12 +756,16 @@ impl Workspace {
                     "rail-terminals",
                     IconName::SquareTerminal,
                     "Terminals",
-                    true,
+                    !self.show_settings,
                     true,
                 )
-                .on_click(cx.listener(|ws, _, _, cx| {
-                    ws.dock_open = !ws.dock_open;
-                    cx.notify();
+                .on_click(cx.listener(|ws, _, window, cx| {
+                    if ws.show_settings {
+                        ws.toggle_settings(window, cx);
+                    } else {
+                        ws.dock_open = !ws.dock_open;
+                        cx.notify();
+                    }
                 })),
             )
             .child(rail_button(
@@ -619,13 +783,20 @@ impl Workspace {
                 false,
             ))
             .child(div().flex_1())
-            .child(rail_button(
-                "rail-settings",
-                IconName::Settings,
-                "Settings (coming soon)",
-                false,
-                false,
-            ))
+            .child(
+                rail_button(
+                    "rail-settings",
+                    IconName::Settings,
+                    if cfg!(target_os = "macos") {
+                        "Settings (Cmd+,)"
+                    } else {
+                        "Settings (Ctrl+,)"
+                    },
+                    self.show_settings,
+                    true,
+                )
+                .on_click(cx.listener(|ws, _, window, cx| ws.toggle_settings(window, cx))),
+            )
     }
 
     fn render_dock(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -839,10 +1010,14 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|ws, _: &NextTab, window, cx| ws.cycle_tab(1, window, cx)))
             .on_action(cx.listener(|ws, _: &PrevTab, window, cx| ws.cycle_tab(-1, window, cx)))
+            .on_action(
+                cx.listener(|ws, _: &OpenSettings, window, cx| ws.toggle_settings(window, cx)),
+            )
             .on_action(cx.listener(|ws, _: &NewWindow, _, cx| {
                 let launch = LaunchOptions {
                     run: None,
                     panes: 1,
+                    restore: None,
                     ..ws.launch.clone()
                 };
                 super::open_window(launch, cx);
@@ -860,15 +1035,21 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_rail(p, cx))
-                    .when(self.dock_open, |d| d.child(self.render_dock(p, cx)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .p(px(6.))
-                            .children(centre),
-                    ),
+                    .map(|d| match &self.settings_page {
+                        Some(page) if self.show_settings => {
+                            d.child(div().flex_1().min_w_0().min_h_0().child(page.clone()))
+                        }
+                        _ => d
+                            .when(self.dock_open, |d| d.child(self.render_dock(p, cx)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .p(px(6.))
+                                    .children(centre),
+                            ),
+                    }),
             )
             .child(self.render_status_bar(theme, p, cx))
     }

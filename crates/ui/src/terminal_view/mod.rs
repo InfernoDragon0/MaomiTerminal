@@ -76,8 +76,9 @@ pub struct TerminalView {
     last_activity: Instant,
     /// Bumped on blur so the running blink loop stops.
     blink_epoch: u64,
-    /// Ease streaming output in (on by default; the settings card exposes it).
+    /// Ease streaming output in.
     smooth_scroll: bool,
+    cursor_blink: bool,
     pane: Rc<RefCell<PaneState>>,
     /// Theme whose colours the session last answered colour queries with.
     query_theme: Option<Theme>,
@@ -124,6 +125,7 @@ impl TerminalView {
             last_activity: Instant::now(),
             blink_epoch: 0,
             smooth_scroll: true,
+            cursor_blink: true,
             pane: Rc::default(),
             query_theme: None,
             _events: events_task,
@@ -177,6 +179,17 @@ impl TerminalView {
 
     pub fn set_smooth_scroll(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.smooth_scroll = enabled;
+        cx.notify();
+    }
+
+    /// Turning blinking on takes effect the next time the pane gets focus.
+    pub fn set_cursor_blink(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.cursor_blink != enabled && !enabled {
+            // Stops the running blink loop.
+            self.blink_epoch += 1;
+            self.cursor_on = true;
+        }
+        self.cursor_blink = enabled;
         cx.notify();
     }
 
@@ -314,6 +327,9 @@ impl TerminalView {
         self.blink_epoch += 1;
         self.cursor_on = true;
         cx.notify();
+        if !self.cursor_blink {
+            return;
+        }
         let epoch = self.blink_epoch;
         let timer = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
