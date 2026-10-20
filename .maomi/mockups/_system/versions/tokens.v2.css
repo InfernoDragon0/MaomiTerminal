@@ -1,0 +1,52 @@
+/* Maomi Workbench design tokens (v2 Aurora, decision D95). Semantic colours (ok / warn / err / now) are fixed per theme, never the accent. */
+:root, [data-theme="dark"] {
+  --bg: #17171f; --surface: #1d1d26; --surface-2: #24242e; --surface-3: #2d2d38;
+  --line: rgba(255,255,255,.07); --line-strong: rgba(255,255,255,.13);
+  --fg: #b8b8c4; --fg-emph: #cfcfd6; --muted: #9898ac; --white: #ececf2; --on-warn: #1d1407; --on-now: #0c1624;
+  --accent: #9588f2; --accent-soft: rgba(149,136,242,.15); --on-accent: #ececf2;
+  --glow-a: rgba(91,140,255,.16); --glow-b: rgba(255,107,181,.09); --dot: rgba(255,255,255,.045);
+  --shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 10px 30px -12px rgba(0,0,0,.6);
+  --ok: #58b789; --warn: #dea14c; --err: #f07a7a; --now: #5ca3ed;
+  --c1: #6b93ef; --c2: #ac7ef2; --c3: #f07ab5; --c4: #efa46b; --c5: #4bc0ab;
+  --m-opus: #b698f3; --m-sonnet: #6ba0ef; --m-haiku: #4bc096;
+  /* the rainbow keeps full saturation on purpose: it marks the one standout action */
+  --aurora: linear-gradient(90deg, #5b8cff, #a66bff 35%, #ff6bb5 65%, #ffa25b);
+}
+/* Mochi: Dark with warm greys, a mauve accent and blue kept to small status dots and one chart colour. Rainbow unchanged. */
+[data-theme="mochi"] {
+  --bg: #1b1a19; --surface: #21201e; --surface-2: #282624; --surface-3: #312f2c;
+  --line: rgba(255,248,236,.07); --line-strong: rgba(255,248,236,.13);
+  --fg: #bcb8b2; --fg-emph: #d6d2cb; --muted: #a0988e; --white: #f0ece6; --on-warn: #1d1407; --on-now: #0e1620;
+  --accent: #bda1d3; --accent-soft: rgba(189,161,211,.14); --on-accent: #1d1820;
+  --glow-a: rgba(91,140,255,.16); --glow-b: rgba(255,107,181,.09); --dot: rgba(255,248,236,.045);
+  --shadow: 0 1px 0 rgba(255,248,236,.04) inset, 0 10px 30px -12px rgba(0,0,0,.6);
+  /* err leans red-orange, away from the mauve accent and rose c3 */
+  --ok: #58b789; --warn: #dea14c; --err: #e7766a; --now: #81a8cf;
+  --c1: #89add2; --c2: #bda1d3; --c3: #e28da9; --c4: #efa46b; --c5: #4bc0ab;
+  --m-opus: #c2a7d7; --m-sonnet: #6bb8c7; --m-haiku: #4bc096;
+  --aurora: linear-gradient(90deg, #5b8cff, #a66bff 35%, #ff6bb5 65%, #ffa25b);
+}
+[data-theme="light"] {
+  --bg: #efeff4; --surface: #fafafc; --surface-2: #f4f4f8; --surface-3: #e8e8f0;
+  --line: rgba(20,20,45,.08); --line-strong: rgba(20,20,45,.15);
+  --fg: #40404f; --fg-emph: #25252f; --muted: #6a6a80; --white: #fafafc; --on-warn: #1d1407; --on-now: #fafafc;
+  --accent: #5b4bff; --accent-soft: rgba(91,75,255,.10); --on-accent: #fafafc;
+  --glow-a: rgba(91,140,255,.14); --glow-b: rgba(255,107,181,.10); --dot: rgba(20,20,45,.05);
+  --shadow: 0 1px 2px rgba(20,20,45,.05), 0 10px 30px -14px rgba(20,20,45,.18);
+  --ok: #1f9d61; --warn: #c77700; --err: #d93a3a; --now: #0a6cd6;
+  --c1: #3b6cf0; --c2: #8a4bf0; --c3: #e0458f; --c4: #cd6b1e; --c5: #12967f;
+  --m-opus: #8a5cf0; --m-sonnet: #2f74e0; --m-haiku: #139967;
+  --aurora: linear-gradient(90deg, #3b6cf0, #8a4bf0 35%, #e0458f 65%, #cd6b1e);
+}
+[data-theme="luxcat"] {
+  --bg: #0f0d0b; --surface: #1a1714; --surface-2: #221e1a; --surface-3: #2b2620;
+  --line: rgba(201,162,77,.13); --line-strong: rgba(201,162,77,.25);
+  --fg: #b0a798; --fg-emph: #ecdfc3; --muted: #988f7f; --white: #f3ece0; --on-warn: #1d1407; --on-now: #121008;
+  --accent: #c9a24d; --accent-soft: rgba(201,162,77,.14); --on-accent: #1a1408;
+  --glow-a: rgba(201,162,77,.11); --glow-b: rgba(213,110,131,.08); --dot: rgba(201,162,77,.06);
+  --shadow: 0 1px 0 rgba(236,223,195,.04) inset, 0 10px 30px -12px rgba(0,0,0,.7);
+  --ok: #85b276; --warn: #d9893f; --err: #dc6f5c; --now: #6fa3d9;
+  --c1: #6fa3d9; --c2: #b07acc; --c3: #d56e83; --c4: #c47d4a; --c5: #5fae8a;
+  --m-opus: #b07acc; --m-sonnet: #6fa3d9; --m-haiku: #5fae8a;
+  --aurora: linear-gradient(90deg, #d56e83, #c47d4a 25%, #c9a24d 50%, #5fae8a 75%, #6fa3d9);
+}

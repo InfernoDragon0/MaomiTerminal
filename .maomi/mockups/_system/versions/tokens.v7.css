@@ -1,0 +1,50 @@
+/* MaomiTerminal design tokens. Skins: Aurora and Onyx, each dark + light (data-theme = aurora-dark | aurora-light | onyx-dark | onyx-light). Semantic colours (ok / warn / err / now) are fixed per theme, never the accent. Token names follow the AgentSummary system: surface = panel, surface-2 = panel2, surface-3 = hover. --aurora is the focus-ring gradient (the fire gradient in Onyx). */
+:root, [data-theme="aurora-dark"] {
+  --bg: #111118; --surface: #18181f; --surface-2: #1f1f28; --surface-3: #282833;
+  --line: rgba(255,255,255,.07); --line-strong: rgba(255,255,255,.13);
+  --fg: #b8b8c4; --fg-emph: #cfcfd6; --muted: #9090a4; --white: #ececf2; --on-warn: #1d1407; --on-now: #0c1624;
+  --accent: #8d7eff; --accent-soft: rgba(139,123,255,.15); --on-accent: #111118;
+  --glow-a: rgba(91,140,255,.16); --glow-b: rgba(255,107,181,.09); --dot: rgba(255,255,255,.045);
+  --shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 10px 30px -12px rgba(0,0,0,.6);
+  --ok: #4cc38a; --warn: #f0a43a; --err: #ff6b6b; --now: #4aa3ff;
+  --c1: #5b8cff; --c2: #aa71ff; --c3: #ff6bb5; --c4: #ffa25b; --c5: #3ccfb4;
+  --m-opus: #b698f3; --m-sonnet: #6ba0ef; --m-haiku: #4bc096;
+  --aurora: linear-gradient(90deg, #5b8cff, #aa71ff 35%, #ff6bb5 65%, #ffa25b);
+}
+[data-theme="aurora-light"] {
+  --bg: #efeff4; --surface: #fafafc; --surface-2: #f4f4f8; --surface-3: #e8e8f0;
+  --line: rgba(20,20,45,.08); --line-strong: rgba(20,20,45,.15);
+  --fg: #40404f; --fg-emph: #25252f; --muted: #67677c; --white: #fafafc; --on-warn: #fafafc; --on-now: #fafafc;
+  --accent: #594afa; --accent-soft: rgba(89,74,250,.10); --on-accent: #fafafc;
+  --glow-a: rgba(91,140,255,.14); --glow-b: rgba(255,107,181,.10); --dot: rgba(20,20,45,.05);
+  --shadow: 0 1px 2px rgba(20,20,45,.05), 0 10px 30px -14px rgba(20,20,45,.18);
+  --ok: #18774a; --warn: #975a00; --err: #c13434; --now: #0966c9;
+  --c1: #3b6cf0; --c2: #7f45dd; --c3: #e0458f; --c4: #ce722c; --c5: #149b86;
+  --m-opus: #8a5cf0; --m-sonnet: #2f74e0; --m-haiku: #139967;
+  --aurora: linear-gradient(90deg, #3b6cf0, #7f45dd 35%, #e0458f 65%, #ce722c);
+}
+/* Onyx: charcoal greys + ember orange. Semantics stay cool-toned so they never read as the accent. */
+[data-theme="onyx-dark"] {
+  --bg: #0f0f13; --surface: #16161b; --surface-2: #1e1e25; --surface-3: #26262e;
+  --line: rgba(255,240,220,.07); --line-strong: rgba(255,240,220,.13);
+  --fg: #c2bbb0; --fg-emph: #ddd2c2; --muted: #938d86; --white: #f3e6d4; --on-warn: #1d1407; --on-now: #0c1624;
+  --accent: #ff7a2e; --accent-soft: rgba(255,122,46,.15); --on-accent: #1a0b04;
+  --glow-a: rgba(255,179,71,.14); --glow-b: rgba(201,58,18,.10); --dot: rgba(255,240,220,.045);
+  --shadow: 0 1px 0 rgba(255,240,220,.04) inset, 0 10px 30px -12px rgba(0,0,0,.65);
+  --ok: #5cc28a; --warn: #f2c14e; --err: #f0506e; --now: #5aa9e6;
+  --c1: #ff8a2e; --c2: #5aa9e6; --c3: #ffd27a; --c4: #b78cdb; --c5: #4fc1b0;
+  --m-opus: #b78cdb; --m-sonnet: #5aa9e6; --m-haiku: #4fc1b0;
+  --aurora: linear-gradient(90deg, #ffd27a, #ffb347 35%, #ff7a2e 65%, #c93a12);
+}
+[data-theme="onyx-light"] {
+  --bg: #eeece9; --surface: #faf9f7; --surface-2: #f4f2ef; --surface-3: #e6e2dc;
+  --line: rgba(40,30,20,.09); --line-strong: rgba(40,30,20,.16);
+  --fg: #3f3b37; --fg-emph: #24211e; --muted: #67655e; --white: #faf9f7; --on-warn: #faf9f7; --on-now: #faf9f7;
+  --accent: #c2410c; --accent-soft: rgba(194,65,12,.10); --on-accent: #faf9f7;
+  --glow-a: rgba(217,154,26,.14); --glow-b: rgba(156,42,10,.08); --dot: rgba(40,30,20,.05);
+  --shadow: 0 1px 2px rgba(40,30,20,.06), 0 10px 30px -14px rgba(40,30,20,.20);
+  --ok: #1f7a4a; --warn: #8f5d00; --err: #b8283f; --now: #1f6fb8;
+  --c1: #b4530f; --c2: #1f6fb8; --c3: #8f6a00; --c4: #7f4fb0; --c5: #0f7a6c;
+  --m-opus: #7f4fb0; --m-sonnet: #1f6fb8; --m-haiku: #0f7a6c;
+  --aurora: linear-gradient(90deg, #d99a1a, #d97a12 35%, #c2410c 65%, #9c2a0a);
+}

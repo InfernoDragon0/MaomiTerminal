@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en" data-theme="aurora-dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Components</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: var(--bg); color: var(--fg); font: 13px/1.5 "Segoe UI", system-ui, sans-serif; }
+h1 { margin: 0 0 4px; font-size: 22px; color: var(--fg-emph); }
+h2 { margin: 0; font-size: 13px; color: var(--fg-emph); }
+.lead { margin: 0 0 18px; color: var(--muted); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.comp { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.comp > header { display: flex; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.comp > header code { color: var(--muted); }
+.demo { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 16px 12px; background: var(--surface); min-height: 70px; }
+.demo > .card, .demo > .sect-title, .demo > .callout { width: 100%; }
+.use { padding: 8px 12px; font: 11.5px Consolas, monospace; color: var(--muted); border-top: 1px solid var(--line); }
+.themes { margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<h1>Components</h1>
+<p class="lead">Reuse these in every mockup page: link components.css, never copy its styles. A new component goes here first.</p>
+<div class="seg themes" id="theme"><button class="on" data-t="aurora-dark">Aurora dark</button><button data-t="aurora-light">Aurora light</button><button data-t="onyx-dark">Onyx dark</button><button data-t="onyx-light">Onyx light</button><button data-t="mochi">Mochi</button></div>
+<div class="grid">
+<section class="comp"><header><h2>Button</h2><code>.btn</code></header><div class="demo"><button class="btn">Cancel</button><button class="btn btn--primary">Approve</button><button class="btn btn--quiet">Skip</button><button class="btn btn--sm btn--danger">Send back</button><button class="btn btn--sm btn--aurora"><svg class="spark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l1.6 4.9 4.9 1.6-4.9 1.6L8 14.5l-1.6-4.9L1.5 8l4.9-1.6z" fill="currentColor"/></svg>Judge all with an agent</button></div><div class="use">&lt;button class="btn btn--primary|--quiet|--danger|--aurora|--sm"&gt; (--aurora: one rainbow agent action per view, with a .spark svg)</div></section>
+<section class="comp"><header><h2>Chip</h2><code>.chip</code></header><div class="demo"><span class="chip chip--ok"><span class="dot"></span>Approved</span><span class="chip chip--now"><span class="dot"></span>In review</span><span class="chip chip--warn"><span class="dot"></span>Sent back</span><span class="chip chip--err"><span class="dot"></span>Fail</span></div><div class="use">&lt;span class="chip chip--ok"&gt;&lt;span class="dot"&gt;&lt;/span&gt;…</div></section>
+<section class="comp"><header><h2>Segmented</h2><code>.seg</code></header><div class="demo"><div class="seg"><button class="on">Day</button><button>Week</button><button>Month</button></div></div><div class="use">&lt;div class="seg"&gt;&lt;button class="on"&gt;…</div></section>
+<section class="comp"><header><h2>Card</h2><code>.card</code></header><div class="demo"><div class="card card-pad"><div class="card-head"><h3>Card title</h3><span class="chip"><span class="dot"></span>meta</span></div></div></div><div class="use">&lt;div class="card card-pad"&gt;</div></section>
+<section class="comp"><header><h2>Section title</h2><code>.sect-title</code></header><div class="demo"><div class="sect-title">This week</div></div><div class="use">&lt;div class="sect-title"&gt;…</div></section>
+<section class="comp"><header><h2>Callout</h2><code>.callout</code></header><div class="demo"><div class="callout warn"><b>Needs your answer</b><span class="why">Status colour from the semantic tokens</span></div></div><div class="use">&lt;div class="callout warn"&gt;</div></section>
+<section class="comp"><header><h2>Tint</h2><code>.tint</code></header><div class="demo"><div class="card card-pad tint tint--warn tint--glow" style="width: 100%"><b>Needs you</b> · status border + top tint + glow</div><div class="card card-pad tint" style="width: 100%"><b>Working</b> · now colour, no glow</div></div><div class="use">&lt;div class="card tint tint--warn tint--glow"&gt;</div></section>
+<section class="comp"><header><h2>Selected item</h2><code>.sel</code></header><div class="demo"><div style="display: grid; gap: 4px; width: 100%"><div style="padding: 7px 10px; border-radius: 9px" class="sel">Selected row</div><div style="padding: 7px 10px; border-radius: 9px">Other row</div></div></div><div class="use">&lt;div class="… sel"&gt; (lists, rails, pickers)</div></section>
+<section class="comp"><header><h2>Aurora ring</h2><code>.aurora-ring</code></header><div class="demo"><div class="card card-pad aurora-ring" style="width: 100%"><b>Current item</b> · gradient 1px border</div></div><div class="use">&lt;div class="card aurora-ring"&gt;</div></section>
+<section class="comp"><header><h2>Nav tab</h2><code>.navtab</code></header><div class="demo" style="flex-direction: column; align-items: stretch; gap: 14px">
+<div style="display: flex; height: 58px; border-bottom: 1px solid var(--line)"><button class="navtab navtab--stack on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/></svg><span class="lbl">Overview</span><span class="tip">Overview</span></button><button class="navtab navtab--stack"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="lbl">Projects</span><span class="cnt cnt--review">1</span><span class="tip">Projects</span></button></div>
+<div style="display: flex; height: 42px; border-bottom: 1px solid var(--line)"><button class="navtab on"><svg viewBox="0 0 24 24"><path d="M4 5h4v14H4zM10 5h4v9h-4zM16 5h4v12h-4z"/></svg><span class="lbl">Plans</span><span class="cnt cnt--review">2</span><span class="tip">Plans</span></button><button class="navtab"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span class="lbl">Activity</span><span class="tip">Activity</span></button><button class="navtab navtab--icon"><svg viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></svg><span class="lbl">Skills</span><span class="tip">Skills &amp; MCP</span></button></div>
+</div><div class="use">&lt;button class="navtab [navtab--stack] [navtab--icon] on"&gt;&lt;svg/&gt;&lt;span class="lbl"&gt;…&lt;/span&gt;&lt;span class="cnt"&gt;…&lt;/span&gt;&lt;span class="tip"&gt;…&lt;/span&gt;</div></section>
+<section class="comp"><header><h2>Switch</h2><code>.switch</code></header><div class="demo"><button class="switch on" role="switch" aria-checked="true" aria-label="On"></button><button class="switch" role="switch" aria-checked="false" aria-label="Off"></button><button class="switch on" role="switch" aria-checked="true" aria-label="Disabled" disabled></button></div><div class="use">&lt;button class="switch on" role="switch" aria-checked="true"&gt;</div></section>
+<section class="comp"><header><h2>Terminal pane</h2><code>.term-pane</code></header><div class="demo" style="display:block"><div class="term-pane focused" style="height:150px"><div class="term-head"><b>pwsh</b><span class="sp">~/GitProjects</span></div><pre class="term-body"><span class="ansi-ok">PS</span> <span class="ansi-c1">~/GitProjects</span> &gt; <span class="ansi-emph">cargo build</span>
+   <span class="ansi-ok">Compiling</span> maomi v0.1.0
+<span class="ansi-warn">warning</span>: unused import
+<span class="ansi-err">error</span>: aborting
+<span class="ansi-ok">PS</span> &gt; <span class="term-cursor"></span></pre></div></div><div class="use">&lt;div class="term-pane [focused]"&gt;&lt;div class="term-head"&gt;…&lt;/div&gt;&lt;pre class="term-body"&gt; (colours: .ansi-ok|warn|err|now|c1..c5|dim|emph)</div></section>
+<section class="comp"><header><h2>Terminal tab</h2><code>.term-tab</code></header><div class="demo"><button class="term-tab on"><span class="lbl">pwsh ~/GitProjects</span><span class="x">&times;</span></button><button class="term-tab"><span class="lbl">cmd C:\</span><span class="x">&times;</span></button></div><div class="use">&lt;button class="term-tab [on]"&gt;&lt;span class="lbl"&gt;…&lt;/span&gt;&lt;span class="x"&gt;&amp;times;&lt;/span&gt;</div></section>
+<section class="comp"><header><h2>Activity rail</h2><code>.activity-rail</code></header><div class="demo" style="padding:0"><nav class="activity-rail" style="height:130px"><button class="rail-btn on" title="Terminals"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 10l3 2-3 2M13 14h3"/></svg></button><button class="rail-btn" title="Hosts"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></svg></button></nav></div><div class="use">&lt;nav class="activity-rail"&gt;&lt;button class="rail-btn [on]" title="…"&gt;&lt;svg/&gt; (.grow spacer pins the last button to the bottom)</div></section>
+<section class="comp"><header><h2>Field</h2><code>.field</code></header><div class="demo"><input class="field" value="Text input"><select class="field"><option>Select</option></select><span class="kbd">Ctrl+Shift+T</span></div><div class="use">&lt;input class="field"&gt; / &lt;select class="field"&gt; / &lt;span class="kbd"&gt;</div></section>
+<section class="comp"><header><h2>Pane drawer</h2><code>.pane-drawer</code></header><div class="demo" style="display:block"><div class="term-pane has-drawer" style="height:190px"><div class="term-head"><button class="drawer-pill open" title="Files in this folder (Ctrl+Shift+B)"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm">MaomiTerminal</span><span class="chev"></span></button><span class="shell">pwsh</span><span class="sp"></span></div><div class="term-main"><aside class="pane-drawer"><div class="drawer-crumb"><span>~</span><span class="sep">&rsaquo;</span><span>GitProjects</span><span class="sep">&rsaquo;</span><b>MaomiTerminal</b></div><div class="drawer-filter"><input class="field" placeholder="Filter" aria-label="Filter files"></div><div class="drawer-list"><div class="drawer-row dir"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm">src</span></div><div class="drawer-row dragging"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg><span class="nm">Cargo.toml</span><span class="sz">1.2 KB</span></div><div class="drawer-row"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg><span class="nm">README.md</span><span class="sz">3.4 KB</span></div></div></aside><pre class="term-body">❯ code <span class="drop-slot"><span class="term-cursor"></span>Cargo.toml</span>
+<span class="drop-hint">drop to insert path</span></pre></div></div></div><div class="use">&lt;div class="term-pane has-drawer"&gt;&lt;div class="term-main"&gt;&lt;aside class="pane-drawer"&gt;&lt;div class="drawer-crumb"&gt;&lt;span class="sep"&gt;&lt;b&gt;&lt;/div&gt;&lt;div class="drawer-filter"&gt;&lt;div class="drawer-list"&gt;&lt;div class="drawer-row [dir] [dragging]"&gt;&lt;svg/&gt;&lt;span class="nm"&gt;&lt;span class="sz"&gt; &middot; .drop-slot + .drop-hint mark the drop spot</div></section>
+<section class="comp"><header><h2>Drawer pill</h2><code>.drawer-pill</code></header><div class="demo"><button class="drawer-pill" title="Files in this folder (Ctrl+Shift+B)"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm">src</span><span class="chev"></span></button><button class="drawer-pill open"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="nm">MaomiTerminal</span><span class="chev"></span></button></div><div class="use">&lt;button class="drawer-pill [open]"&gt;&lt;svg/&gt;&lt;span class="nm"&gt;folder&lt;/span&gt;&lt;span class="chev"&gt;&lt;/span&gt;&lt;/button&gt; (first item in .term-head)</div></section>
+</div>
+<script>
+var t = new URLSearchParams(location.search).get("theme");
+if (t) document.documentElement.setAttribute("data-theme", t);
+document.getElementById("theme").addEventListener("click", function (e) {
+  var b = e.target.closest("button"); if (!b) return;
+  document.documentElement.setAttribute("data-theme", b.getAttribute("data-t"));
+  this.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
+});
+</script>
+</body>
+</html>

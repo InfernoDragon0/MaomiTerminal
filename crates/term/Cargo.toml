@@ -1,0 +1,21 @@
+[package]
+name = "maomi-term"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+portable-pty.workspace = true
+async-channel.workspace = true
+which.workspace = true
+sysinfo.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# maomi-term may need unsafe later (PTY / OS handles); swap this for its own [lints] table then.
+[lints]
+workspace = true

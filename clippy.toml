@@ -1,0 +1,2 @@
+# Keep in step with rust-toolchain.toml
+msrv = "1.99.0"

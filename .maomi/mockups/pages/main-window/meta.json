@@ -1,0 +1,31 @@
+{
+  "id": "main-window",
+  "title": "Main window",
+  "status": "approved",
+  "version": 5,
+  "versions": [
+    {
+      "v": 4,
+      "at": 1792470262946,
+      "bytes": 27583,
+      "note": "Drawer shell-follow link toggle"
+    },
+    {
+      "v": 5,
+      "at": 1792470364213,
+      "bytes": 27615,
+      "note": "Shell-follow busy state + running indicator on bottom-left pane"
+    }
+  ],
+  "createdAt": 1792469223518,
+  "updatedAt": 1792470904501,
+  "plans": [
+    {
+      "plan": "p-mvg50cth6ccf",
+      "milestone": "m-mvg50ctinvuq"
+    }
+  ],
+  "plan": "p-mvg50cth6ccf",
+  "milestone": "m-mvg50ctinvuq",
+  "approvedVersion": 5
+}

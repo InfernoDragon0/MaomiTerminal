@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# UI: gpui-kit pins a matching GPUI (gpui-pre) + gpui-component; upgrade deliberately.
+gpui-kit = "=0.7.1"
+
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Terminal emulation and PTY.
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+async-channel = "2"
+which = "8"
+# Only the process API (cwd fallback); the default features pull in disks, networks and WMI.
+sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+etcetera = "0.11"
+
+maomi-ui = { path = "crates/ui" }
+maomi-term = { path = "crates/term" }
+maomi-config = { path = "crates/config" }
+
+[workspace.lints.rust]
+# maomi-term may opt out later (PTY / OS handles); give it its own [lints] table when it does.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev]
+# Line tables only for our crates too: panics and logs keep file:line, and the incremental cache,
+# exe and PDB shrink a lot (full debug info only matters for stepping through locals).
+debug = "line-tables-only"
+# GPUI is slow unoptimised; keep deps fast.
+[profile.dev.package."*"]
+opt-level = 2
+# Full debug info for every dependency overflows the MSVC PDB limit (LNK1318); keep line tables.
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# Line tables only: on MSVC they go to a separate maomiterminal.pdb (ship it as a symbols zip, not in the exe).
+# panic stays "unwind" (abort saves little and loses panic containment).
+debug = "line-tables-only"

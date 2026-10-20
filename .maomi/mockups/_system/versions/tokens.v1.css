@@ -1,0 +1,13 @@
+/* Design tokens: the single source of colours for every mockup page. One block per theme. */
+:root, [data-theme="dark"] {
+  --bg: #16161c; --surface: #1e1e26; --surface-2: #262630; --line: rgba(255,255,255,.08);
+  --fg: #c8c8d2; --fg-emph: #ececf2; --muted: #8e8ea2;
+  --accent: #8b7bff; --on-accent: #ffffff;
+  --ok: #4cc38a; --warn: #f0a43a; --err: #ff6b6b; --now: #4aa3ff;
+}
+[data-theme="light"] {
+  --bg: #f2f2f6; --surface: #fbfbfd; --surface-2: #f0f0f5; --line: rgba(20,20,45,.1);
+  --fg: #3e3e4c; --fg-emph: #22222c; --muted: #66667a;
+  --accent: #5b4bff; --on-accent: #ffffff;
+  --ok: #1f9d61; --warn: #b26a00; --err: #d03434; --now: #0a6cd6;
+}

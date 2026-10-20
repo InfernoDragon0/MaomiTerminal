@@ -1,0 +1,118 @@
+{
+  "version": 16,
+  "approved": false,
+  "themes": [
+    "aurora-dark",
+    "aurora-light",
+    "onyx-dark",
+    "onyx-light",
+    "mochi"
+  ],
+  "background": "--bg",
+  "components": [
+    {
+      "name": "Button",
+      "cls": ".btn",
+      "usage": "<button class=\"btn btn--primary|--quiet|--danger|--aurora|--sm\"> (--aurora: one rainbow agent action per view, with a .spark svg)"
+    },
+    {
+      "name": "Chip",
+      "cls": ".chip",
+      "usage": "<span class=\"chip chip--ok|now|warn|err\"><span class=\"dot\"></span>… (fixed semantic colours)"
+    },
+    {
+      "name": "Segmented",
+      "cls": ".seg",
+      "usage": "<div class=\"seg\"><button class=\"on\">…</button></div> (view modes / filters, not navigation)"
+    },
+    {
+      "name": "Card",
+      "cls": ".card",
+      "usage": "<div class=\"card card-pad\"><div class=\"card-head\"><h3>…"
+    },
+    {
+      "name": "Section title",
+      "cls": ".sect-title",
+      "usage": "<div class=\"sect-title\">…</div> (uppercase + fading rule)"
+    },
+    {
+      "name": "Callout",
+      "cls": ".callout",
+      "usage": "<div class=\"callout ok|warn|err\"><b>…</b><span class=\"why\">…</span></div> (flat, no stripe)"
+    },
+    {
+      "name": "Switch",
+      "cls": ".switch",
+      "usage": "<button class=\"switch on\" role=\"switch\" aria-checked=\"true\" aria-label=\"…\"> (on/off toggle; :disabled dims it)"
+    },
+    {
+      "name": "Tint",
+      "cls": ".tint",
+      "usage": "<div class=\"card tint tint--ok|warn|err|accent [tint--glow]\"> status card/row; never a left stripe"
+    },
+    {
+      "name": "Selected item",
+      "cls": ".sel",
+      "usage": "<div class=\"… sel\"> selected list/rail item: accent-soft fill + thin accent ring"
+    },
+    {
+      "name": "Aurora ring",
+      "cls": ".aurora-ring",
+      "usage": "<div class=\"card aurora-ring\"> current/featured item: gradient 1px border (fire gradient in Onyx)"
+    },
+    {
+      "name": "Nav tab",
+      "cls": ".navtab",
+      "usage": "<button class=\"navtab [navtab--stack] [navtab--icon] on\"><svg/><span class=\"lbl\">…</span><span class=\"tip\">…</span> section navigation with a 1px bottom line"
+    },
+    {
+      "name": "Terminal pane",
+      "cls": ".term-pane",
+      "usage": "<div class=\"term-pane [focused] [has-drawer]\"><div class=\"term-head\">drawer-pill, shell, [.running dot], .sp, icons</div><div class=\"term-main\">[drawer]<pre class=\"term-body\">…</pre></div></div> (panel background, mono 13px, 28px header; .f"
+    },
+    {
+      "name": "Terminal tab",
+      "cls": ".term-tab",
+      "usage": "<button class=\"term-tab [on]\"><span class=\"lbl\">…</span><span class=\"x\">×</span></button> (title-bar tab)"
+    },
+    {
+      "name": "Activity rail",
+      "cls": ".activity-rail",
+      "usage": "<nav class=\"activity-rail\"><button class=\"rail-btn [on]\" title=\"…\"><svg/></button><div class=\"grow\"></div>…</nav> (44px; active = 3px accent bar on the rail's left edge)"
+    },
+    {
+      "name": "Field",
+      "cls": ".field",
+      "usage": "<input class=\"field\"> / <select class=\"field\"> text, number, select input; <span class=\"kbd\"> = shortcut cap"
+    },
+    {
+      "name": "Pane drawer",
+      "cls": ".pane-drawer",
+      "usage": "<aside class=\"pane-drawer\"><div class=\"drawer-crumb\"><div class=\"path\"><span>~</span><span class=\"sep\">›</span><b>last</b></div><button class=\"drawer-sync\">…</button></div><div class=\"drawer-filter\"><input class=\"field\"></div><div class=\"dr"
+    },
+    {
+      "name": "Drawer pill",
+      "cls": ".drawer-pill",
+      "usage": "<button class=\"drawer-pill [open]\"><svg/><span class=\"nm\">folder</span><span class=\"chev\"></span></button> (first item in .term-head; shows the cwd's last folder, chevron flips when open, open = accent-soft fill + ring)"
+    },
+    {
+      "name": "Drawer sync",
+      "cls": ".drawer-sync",
+      "usage": "<button class=\"drawer-sync [on] [busy]\" aria-pressed=\"true\" title=\"Shell follows drawer: on (opening a folder runs cd in this shell)\"><svg link/></button> (last item in .drawer-crumb; on = .sel look; .busy + disabled + aria-disabled = greye"
+    }
+  ],
+  "rules": [],
+  "updatedAt": 1792470358666,
+  "source": {
+    "project": "f--GitProjects-Automation-AgentSummary",
+    "root": "f:\\GitProjects\\Automation\\AgentSummary",
+    "files": [
+      "tokens.css",
+      "components.css",
+      "components.html"
+    ],
+    "version": 25,
+    "at": 1792468938030,
+    "linked": false
+  }
+}

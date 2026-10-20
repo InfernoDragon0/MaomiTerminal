@@ -1,0 +1,31 @@
+{
+  "id": "settings",
+  "title": "Settings",
+  "status": "approved",
+  "version": 4,
+  "versions": [
+    {
+      "v": 3,
+      "at": 1792469939515,
+      "bytes": 21199,
+      "note": "Keybinding: toggle file drawer"
+    },
+    {
+      "v": 4,
+      "at": 1792470265466,
+      "bytes": 21714,
+      "note": "Shell: new drawers start with shell-follow"
+    }
+  ],
+  "createdAt": 1792469225611,
+  "updatedAt": 1792470904509,
+  "plans": [
+    {
+      "plan": "p-mvg50cth6ccf",
+      "milestone": "m-mvg50ctinvuq"
+    }
+  ],
+  "plan": "p-mvg50cth6ccf",
+  "milestone": "m-mvg50ctinvuq",
+  "approvedVersion": 4
+}

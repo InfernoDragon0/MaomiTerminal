@@ -1,0 +1,23 @@
+# cargo-about config: generates THIRD-PARTY.md.
+# Run: cargo about generate about.hbs > THIRD-PARTY.md
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Zlib",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "bzip2-1.0.6",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+]
+ignore-dev-dependencies = true
+ignore-build-dependencies = false
+workarounds = []

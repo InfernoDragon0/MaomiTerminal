@@ -1,0 +1,23 @@
+[package]
+name = "maomi-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "maomiterminal"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+maomi-ui.workspace = true
+maomi-term.workspace = true
+maomi-config.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

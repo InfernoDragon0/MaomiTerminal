@@ -1,0 +1,57 @@
+# Dependency policy (design: "Licensing & distribution"). Run: cargo deny check
+[graph]
+all-features = false
+
+[licenses]
+# Permissive only. GPL / LGPL / AGPL / SSPL stay out (dual-licensed crates pass on their permissive side).
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Zlib",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "bzip2-1.0.6",
+    # webpki-roots (Mozilla CA bundle, via reqwest/rustls): permissive data licence.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+# MPL-2.0 only for these GPUI transitive deps, never globally, so a new MPL crate fails CI.
+# None of them ships in the Windows binary; option-ext (91 lines) ships on macOS / Linux, unmodified.
+exceptions = [
+    # zed-font-kit's Windows loader; font-kit is only built for macOS / Linux, so never compiled.
+    { allow = ["MPL-2.0"], crate = "dwrote" },
+    # dirs-sys helper. Windows: compile-time only (rust-embed macro). macOS / Linux: via zed-font-kit.
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+    # Build-time code generator for GPUI's macOS layer; not linked into the app.
+    { allow = ["MPL-2.0"], crate = "cbindgen" },
+]
+
+[licenses.private]
+# Our own crates are publish = false; their licence (Apache-2.0) is set in the workspace manifest.
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# crates.io only. Any git dependency must be added to `allow-git` with a pinned rev (none today).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[advisories]
+# Unmaintained notices for deep GPUI deps are not actionable here; vulnerabilities still fail.
+unmaintained = "none"
+yanked = "deny"
