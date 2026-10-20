@@ -6,15 +6,19 @@
 
 mod color;
 mod component;
+mod fonts;
 mod palette;
 mod terminal;
+mod terminal_view;
 
 use gpui_kit::{App, Global, KeyBinding};
 
 pub use color::Color;
 pub use component::apply;
+pub use fonts::TERMINAL_FAMILY;
 pub use palette::Palette;
 pub use terminal::TerminalColors;
+pub use terminal_view::{TerminalElement, TerminalFont, TerminalView, TerminalViewEvent};
 
 gpui_kit::actions!(maomi_ui, [CycleSkin, ToggleMode]);
 
@@ -148,6 +152,8 @@ pub fn set_theme(cx: &mut App, theme: Theme) {
 ///
 /// Call after `gpui_kit::init(cx)`.
 pub fn init(cx: &mut App) {
+    fonts::load(cx);
+    cx.bind_keys(terminal_view::key_bindings());
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-k", CycleSkin, None),
         KeyBinding::new("ctrl-shift-l", ToggleMode, None),

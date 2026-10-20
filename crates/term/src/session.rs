@@ -17,7 +17,7 @@ use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{Config as TermConfig, Osc52};
+use alacritty_terminal::term::{Config as TermConfig, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
@@ -479,7 +479,34 @@ impl PtySession {
     pub fn snapshot(&self) -> GridSnapshot {
         // Cleared before reading so output that lands during the copy wakes the UI again.
         self.shared.wakeup_pending.store(false, Ordering::Release);
-        GridSnapshot::capture(&self.term.lock())
+        GridSnapshot::from_term(&self.term.lock())
+    }
+
+    /// Like [`Self::snapshot`], then prepends `rows_above(&viewport)` history rows, all under
+    /// one lock so the rows match the viewport.
+    pub fn snapshot_with_rows_above(
+        &self,
+        rows_above: impl FnOnce(&GridSnapshot) -> usize,
+    ) -> GridSnapshot {
+        self.shared.wakeup_pending.store(false, Ordering::Release);
+        let term = self.term.lock();
+        let mut snapshot = GridSnapshot::from_term(&term);
+        let rows = rows_above(&snapshot);
+        snapshot.add_rows_above(&term, rows);
+        snapshot
+    }
+
+    /// Current DEC modes (app cursor, bracketed paste, mouse reporting, alt screen).
+    pub fn mode(&self) -> TermMode {
+        *self.term.lock().mode()
+    }
+
+    /// Text of the current selection, if any.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term
+            .lock()
+            .selection_to_string()
+            .filter(|s| !s.is_empty())
     }
 
     /// Sends input bytes (keys, paste) to the shell. Never blocks.
