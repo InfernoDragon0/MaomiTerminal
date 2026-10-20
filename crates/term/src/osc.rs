@@ -1,18 +1,23 @@
-//! Picks shell-integration OSC sequences out of the raw PTY stream.
+//! Picks shell-integration OSC sequences and the win32-input-mode switch out of the raw PTY stream.
 //!
-//! alacritty_terminal drops OSC 7, 9;9, 133 and 633, so they are scanned here before the bytes
-//! reach the parser. The bytes still go to the parser unchanged.
+//! alacritty_terminal drops OSC 7, 9;9, 133 and 633 and does not know `CSI ? 9001 h/l` (ConPTY's
+//! request for win32-input-mode keys), so they are scanned here before the bytes reach the
+//! parser. The bytes still go to the parser unchanged.
 
 use std::path::PathBuf;
 
 /// Longest OSC payload kept; longer ones (images, big OSC 52 copies) are skipped.
 const MAX_PAYLOAD: usize = 4096;
+/// Longest CSI parameter list kept; the sequences wanted here are far shorter.
+const MAX_CSI: usize = 32;
 
-/// A shell-integration mark found in the output.
+/// A mark found in the output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ShellMark {
     Cwd(PathBuf),
     Prompt(PromptMark),
+    /// `CSI ? 9001 h` (true) or `l` (false): the program wants win32-input-mode keys.
+    Win32InputMode(bool),
 }
 
 /// FinalTerm / OSC 133 semantic prompt marks.
@@ -38,6 +43,8 @@ enum State {
     /// Payload over [`MAX_PAYLOAD`]: wait for the terminator without storing.
     Skip,
     SkipEsc,
+    /// Inside `ESC [`: parameter and intermediate bytes go to `payload` until the final byte.
+    Csi,
 }
 
 #[derive(Debug)]
@@ -76,7 +83,29 @@ impl OscScanner {
                         self.payload.clear();
                         State::Osc
                     }
+                    b'[' => {
+                        self.payload.clear();
+                        State::Csi
+                    }
                     0x1b => State::Esc,
+                    _ => State::Ground,
+                },
+                State::Csi => match b {
+                    0x20..=0x3f if self.payload.len() < MAX_CSI => {
+                        self.payload.push(b);
+                        State::Csi
+                    }
+                    0x40..=0x7e => {
+                        match (self.payload.as_slice(), b) {
+                            (b"?9001", b'h') => out.push(ShellMark::Win32InputMode(true)),
+                            (b"?9001", b'l') => out.push(ShellMark::Win32InputMode(false)),
+                            _ => {}
+                        }
+                        self.payload.clear();
+                        State::Ground
+                    }
+                    0x1b => State::Esc,
+                    // Controls inside a CSI are rare; dropping the sequence is safe.
                     _ => State::Ground,
                 },
                 State::Osc => match b {
@@ -254,6 +283,48 @@ mod tests {
                 ShellMark::Prompt(PromptMark::CommandStart),
                 ShellMark::Prompt(PromptMark::CommandExecuted),
                 ShellMark::Prompt(PromptMark::CommandFinished(None)),
+            ]
+        );
+    }
+
+    #[test]
+    fn win32_input_mode_set_and_reset() {
+        let marks = scan(&[b"a\x1b[?9001hb\x1b[?1004h\x1b[31m\x1b[?9001lc"]);
+        assert_eq!(
+            marks,
+            vec![
+                ShellMark::Win32InputMode(true),
+                ShellMark::Win32InputMode(false)
+            ]
+        );
+    }
+
+    #[test]
+    fn win32_input_mode_split_across_chunks() {
+        let marks = scan(&[b"x\x1b", b"[?90", b"01", b"h", b"\x1b[?9001", b"l"]);
+        assert_eq!(
+            marks,
+            vec![
+                ShellMark::Win32InputMode(true),
+                ShellMark::Win32InputMode(false)
+            ]
+        );
+    }
+
+    #[test]
+    fn similar_csi_sequences_are_ignored() {
+        let marks = scan(&[b"\x1b[9001h\x1b[?90011h\x1b[?9001;1h\x1b[?9001m\x1b[?9001\x18h"]);
+        assert_eq!(marks, vec![]);
+    }
+
+    #[test]
+    fn csi_does_not_break_osc_scanning() {
+        let marks = scan(&[b"\x1b[?9001h\x1b[2J\x1b]133;A\x07"]);
+        assert_eq!(
+            marks,
+            vec![
+                ShellMark::Win32InputMode(true),
+                ShellMark::Prompt(PromptMark::PromptStart)
             ]
         );
     }

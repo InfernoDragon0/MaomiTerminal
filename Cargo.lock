@@ -3926,6 +3926,7 @@ dependencies = [
  "anyhow",
  "gpui-kit",
  "maomi-term",
+ "sysinfo",
  "tracing",
 ]
 

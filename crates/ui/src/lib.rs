@@ -8,6 +8,7 @@ mod color;
 mod component;
 mod fonts;
 mod palette;
+pub mod shell;
 mod terminal;
 mod terminal_view;
 
@@ -154,6 +155,7 @@ pub fn set_theme(cx: &mut App, theme: Theme) {
 pub fn init(cx: &mut App) {
     fonts::load(cx);
     cx.bind_keys(terminal_view::key_bindings());
+    shell::init(cx);
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-k", CycleSkin, None),
         KeyBinding::new("ctrl-shift-l", ToggleMode, None),

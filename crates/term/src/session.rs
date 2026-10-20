@@ -224,6 +224,8 @@ struct ShellState {
 struct Shared {
     events: async_channel::Sender<TermEvent>,
     wakeup_pending: AtomicBool,
+    /// ConPTY asked for win32-input-mode keys (`CSI ? 9001 h`).
+    win32_input: AtomicBool,
     state: Mutex<ShellState>,
     size: Mutex<TermSize>,
     palette: Mutex<QueryPalette>,
@@ -263,6 +265,7 @@ impl Shared {
         match mark {
             ShellMark::Cwd(path) => self.set_cwd(path, true),
             ShellMark::Prompt(mark) => self.set_prompt(mark),
+            ShellMark::Win32InputMode(on) => self.win32_input.store(on, Ordering::Release),
         }
     }
 
@@ -394,6 +397,7 @@ impl PtySession {
         let shared = Arc::new(Shared {
             events: events_tx,
             wakeup_pending: AtomicBool::new(false),
+            win32_input: AtomicBool::new(false),
             state: Mutex::new(ShellState {
                 cwd,
                 ..ShellState::default()
@@ -499,6 +503,12 @@ impl PtySession {
     /// Current DEC modes (app cursor, bracketed paste, mouse reporting, alt screen).
     pub fn mode(&self) -> TermMode {
         *self.term.lock().mode()
+    }
+
+    /// True while the program asked for win32-input-mode keys (`CSI ? 9001 h`, sent by ConPTY
+    /// on Windows). Keys are then sent as `CSI Vk;Sc;Uc;Kd;Cs;Rc _` records.
+    pub fn win32_input_mode(&self) -> bool {
+        self.shared.win32_input.load(Ordering::Acquire)
     }
 
     /// Text of the current selection, if any.

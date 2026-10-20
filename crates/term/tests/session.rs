@@ -167,6 +167,30 @@ fn poll_cwd_falls_back_to_the_process() {
     }
 }
 
+/// ConPTY accepts win32-input-mode key records. This build of ConPTY never announces the mode
+/// with `CSI ? 9001 h`, so the flag stays off and the UI has to decide on its own.
+#[cfg(windows)]
+#[test]
+fn conpty_accepts_win32_key_records() {
+    let session = spawn(plain_shell(), false);
+    wait_for_text(&session, |t| t.contains(":\\"));
+    for c in "echo win32-ok".chars() {
+        let vk = match c {
+            ' ' => 0x20,
+            '-' => 0xbd,
+            c => c.to_ascii_uppercase() as u32,
+        };
+        // One write per key at typing speed. A tight burst can split a record inside ConPTY.
+        session.write(format!(
+            "\x1b[{vk};0;{u};1;0;1_\x1b[{vk};0;{u};0;0;1_",
+            u = c as u32
+        ));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    session.write("\x1b[13;0;13;1;0;1_\x1b[13;0;13;0;0;1_");
+    wait_for_text(&session, |t| t.matches("win32-ok").count() >= 2);
+}
+
 #[cfg(unix)]
 fn which_shell(name: &str) -> Option<Shell> {
     ["/bin", "/usr/bin", "/usr/local/bin"]

@@ -5,6 +5,7 @@ mod element;
 mod input;
 mod layout;
 mod smooth;
+mod win32_input;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -14,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::{
     ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Render, Styled as _, Subscription,
-    Task, Window, div, px,
+    IntoElement, KeyDownEvent, Keystroke, MouseButton, ParentElement as _, Render, Styled as _,
+    Subscription, Task, Window, div, px,
 };
 use maomi_term::{PromptState, PtySession, QueryPalette, Rgb, SessionOptions, TermEvent, TermMode};
 
@@ -59,6 +60,8 @@ pub enum TerminalViewEvent {
     PromptChanged(PromptState),
     Bell,
     Exited(Option<u32>),
+    /// A fresh shell replaced the exited one (Enter on the exit banner).
+    Restarted,
 }
 
 pub struct TerminalView {
@@ -152,6 +155,7 @@ impl TerminalView {
                 self.exited = None;
                 self.query_theme = None;
                 self.pane = Rc::default();
+                cx.emit(TerminalViewEvent::Restarted);
                 cx.notify();
             }
             Err(err) => tracing::error!(%err, "failed to restart the shell"),
@@ -195,11 +199,28 @@ impl TerminalView {
         self.send_input(input::encode_paste(&text, bracketed));
     }
 
+    /// Bytes for `keystroke`: win32-input-mode records when ConPTY asked for them, else VT.
+    fn encode_key(&self, keystroke: &Keystroke, prefer_char: bool) -> Option<Vec<u8>> {
+        // The inbox ConPTY accepts win32 key records without announcing ?9001h, but a tight
+        // burst of records can get garbled, so records are only used where VT loses
+        // information (Shift+Enter and friends) or when ConPTY asked for them.
+        if cfg!(windows)
+            && (self.session.win32_input_mode() || needs_win32_record(keystroke))
+            && let Some(bytes) = win32_input::encode_win32_key(keystroke)
+        {
+            return Some(bytes);
+        }
+        input::encode_key(keystroke, prefer_char, self.session.mode())
+    }
+
     /// A key bound through an action (Tab, Shift+Tab, Ctrl+C) rather than `on_key_down`.
-    fn send_key(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
-        if self.exited.is_none() {
+    fn send_key(&mut self, keystroke: &str, cx: &mut Context<Self>) {
+        if self.exited.is_none()
+            && let Ok(keystroke) = Keystroke::parse(keystroke)
+            && let Some(bytes) = self.encode_key(&keystroke, false)
+        {
             self.last_activity = Instant::now();
-            self.send_input(bytes.to_vec());
+            self.send_input(bytes);
         }
         cx.stop_propagation();
     }
@@ -258,7 +279,7 @@ impl TerminalView {
                 return;
             }
         }
-        if let Some(bytes) = input::encode_key(keystroke, event.prefer_character_input, mode) {
+        if let Some(bytes) = self.encode_key(keystroke, event.prefer_character_input) {
             self.last_activity = Instant::now();
             self.send_input(bytes);
             cx.stop_propagation();
@@ -360,13 +381,13 @@ impl Render for TerminalView {
             .on_key_down(
                 cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key_down(event, cx)),
             )
-            .on_action(cx.listener(|this, _: &SendTab, _, cx| this.send_key(b"\t", cx)))
-            .on_action(cx.listener(|this, _: &SendBackTab, _, cx| this.send_key(b"\x1b[Z", cx)))
+            .on_action(cx.listener(|this, _: &SendTab, _, cx| this.send_key("tab", cx)))
+            .on_action(cx.listener(|this, _: &SendBackTab, _, cx| this.send_key("shift-tab", cx)))
             .on_action(cx.listener(|this, _: &CopyOrInterrupt, _, cx| {
                 if this.copy(cx) {
                     this.session.with_term(|term| term.selection = None);
                 } else {
-                    this.send_key(&[3], cx);
+                    this.send_key("ctrl-c", cx);
                 }
             }))
             .size_full()
@@ -385,6 +406,16 @@ impl Render for TerminalView {
             ))
             .children(banner)
     }
+}
+
+/// Keys whose modifiers plain VT cannot express (Shift+Enter arrives as Enter).
+fn needs_win32_record(keystroke: &Keystroke) -> bool {
+    let m = &keystroke.modifiers;
+    (m.shift || m.control || m.alt)
+        && matches!(
+            keystroke.key.as_str(),
+            "enter" | "space" | "backspace" | "escape" | "tab"
+        )
 }
 
 fn query_palette(colors: &TerminalColors) -> QueryPalette {
