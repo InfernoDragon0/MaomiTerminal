@@ -40,7 +40,6 @@ fn main() {
         .run(move |cx| {
             gpui_kit::init(cx);
             maomi_ui::init(config, cx);
-            updater::init(cx);
             if layout.windows.is_empty() {
                 shell::open_window(launch.clone(), cx);
             }
@@ -51,6 +50,8 @@ fn main() {
                 };
                 shell::open_window(launch, cx);
             }
+            // After the windows: its toasts need one to show in.
+            updater::init(cx);
         });
 }
 

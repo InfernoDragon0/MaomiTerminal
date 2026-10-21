@@ -3,11 +3,12 @@
 //! Every control writes straight into the config through [`settings::update_config`]; windows
 //! observe the config and re-apply it, so changes show everywhere at once.
 
-use gpui_kit::component::IndexPath;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{Disableable as _, IndexPath, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
@@ -17,6 +18,7 @@ use gpui_kit::{
 use maomi_term::{CursorShape, Shell, available_shells, default_shell};
 
 use crate::settings::{self, CURSOR_STYLES, SYSTEM_MODE};
+use crate::updates::{self, UpdateState};
 use crate::{Mode, Palette, Skin, TERMINAL_FAMILY, Theme, set_theme};
 
 type LabelSelect = SelectState<SearchableVec<SharedString>>;
@@ -171,6 +173,7 @@ impl SettingsPage {
             ),
             // Redraw when the theme or config changes elsewhere (title bar, shortcuts).
             cx.observe_global::<settings::Settings>(|_, cx| cx.notify()),
+            cx.observe_global::<updates::Updates>(|_, cx| cx.notify()),
         ];
 
         Self {
@@ -318,10 +321,10 @@ impl SettingsPage {
                         .child(NumberInput::new(&self.font_size))
                         .into_any_element(),
                 ),
-                row("Cursor style", None, p, segmented(cursors, p)),
+                row("Cursor style", None::<&str>, p, segmented(cursors, p)),
                 row(
                     "Cursor blink",
-                    None,
+                    None::<&str>,
                     p,
                     Switch::new("switch-blink")
                         .checked(blink)
@@ -386,6 +389,8 @@ impl SettingsPage {
 
     fn render_updates(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let auto = settings::config(cx).updates.auto;
+        let state = updates::state(cx);
+        let busy = matches!(state, UpdateState::Checking | UpdateState::Downloading(_));
         section(
             "Updates",
             p,
@@ -406,15 +411,53 @@ impl SettingsPage {
                 ),
                 row(
                     "Version",
-                    None,
+                    Some(update_status(&state)),
                     p,
                     div()
-                        .text_color(p.muted.to_hsla())
-                        .child(env!("CARGO_PKG_VERSION"))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_color(p.muted.to_hsla())
+                                .child(env!("CARGO_PKG_VERSION")),
+                        )
+                        .when(matches!(state, UpdateState::Ready(_)), |d| {
+                            d.child(
+                                Button::new("settings-update-restart")
+                                    .primary()
+                                    .small()
+                                    .label("Restart")
+                                    .on_click(|_, _, cx| updates::restart(cx)),
+                            )
+                        })
+                        .child(
+                            Button::new("settings-update-check")
+                                .small()
+                                .label("Check now")
+                                .loading(busy)
+                                .disabled(busy || state == UpdateState::Unavailable)
+                                .on_click(|_, _, cx| updates::check(cx)),
+                        )
                         .into_any_element(),
                 ),
             ],
         )
+    }
+}
+
+/// One line under "Version" saying where the update check is.
+fn update_status(state: &UpdateState) -> SharedString {
+    match state {
+        UpdateState::Unavailable => "Updates work in installed builds only".into(),
+        UpdateState::Idle => "Not checked yet".into(),
+        UpdateState::Checking => "Checking for updates…".into(),
+        UpdateState::UpToDate => "Up to date".into(),
+        UpdateState::Downloading(v) => format!("Downloading v{v}…").into(),
+        UpdateState::Ready(v) => {
+            format!("v{v} is ready: installs when you quit, or restart now").into()
+        }
+        UpdateState::Failed(err) => format!("Update check failed: {err}").into(),
     }
 }
 
@@ -581,10 +624,11 @@ fn section(title: &'static str, p: &Palette, rows: Vec<AnyElement>) -> AnyElemen
 
 fn row(
     label: &'static str,
-    hint: Option<&'static str>,
+    hint: Option<impl Into<SharedString>>,
     p: &Palette,
     control: AnyElement,
 ) -> AnyElement {
+    let hint = hint.map(Into::into);
     div()
         .flex()
         .items_center()

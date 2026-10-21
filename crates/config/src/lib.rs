@@ -87,6 +87,8 @@ pub struct ShellSettings {
 pub struct UpdateSettings {
     /// Download new releases in the background and install them when the app quits.
     pub auto: bool,
+    /// Version of the last start; a different version at start means the app was updated.
+    pub last_version: Option<String>,
 }
 
 impl Default for Config {
@@ -103,7 +105,10 @@ impl Default for Config {
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        Self { auto: true }
+        Self {
+            auto: true,
+            last_version: None,
+        }
     }
 }
 

@@ -21,6 +21,7 @@ use super::pane::{Pane, PaneEvent, display_path};
 use super::settings_page::SettingsPage;
 use super::tree::{Direction, PaneTree};
 use super::{LaunchOptions, actions::*};
+use crate::updates::{self, UpdateState};
 use crate::{Mode, Palette, Skin, Theme, set_theme, settings};
 
 struct Tab {
@@ -61,6 +62,7 @@ impl Workspace {
         this._observers = vec![
             cx.observe_global_in::<settings::Settings>(window, |ws, _, cx| ws.apply_settings(cx)),
             cx.observe_window_appearance(window, |_, _, cx| settings::sync_system_theme(cx)),
+            cx.observe_global::<updates::Updates>(|_, cx| cx.notify()),
         ];
         if let Some(layout) = this.launch.restore.take() {
             this.restore(layout, window, cx);
@@ -629,6 +631,37 @@ impl Workspace {
                 })
                 .child(skin.name())
         });
+        // Shown while a downloaded update waits; a click restarts into it.
+        let update_pill = match updates::state(cx) {
+            UpdateState::Ready(version) => Some(
+                div()
+                    .id("update-pill")
+                    .occlude()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(5.))
+                    .h(px(24.))
+                    .px(px(9.))
+                    .rounded(px(12.))
+                    .text_size(px(12.))
+                    .text_color(p.accent.to_hsla())
+                    .bg(p.accent_soft.to_hsla())
+                    .border_1()
+                    .border_color(p.accent.to_hsla())
+                    .cursor_pointer()
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(format!(
+                            "v{version} is ready. Click to restart and install."
+                        ))
+                        .build(window, cx)
+                    })
+                    .on_click(|_, _, cx| updates::restart(cx))
+                    .child(Icon::new(IconName::ArrowUp).size(px(13.)))
+                    .child("Update"),
+            ),
+            _ => None,
+        };
         let mode_enabled = theme.mode_toggle_enabled();
         let mode_icon = if theme.effective_mode() == Mode::Dark {
             IconName::Moon
@@ -674,6 +707,7 @@ impl Workspace {
                         .on_click(cx.listener(|ws, _, window, cx| ws.new_tab(window, cx))),
                 )
                 .child(div().flex_1().min_w(px(8.)))
+                .when_some(update_pill, |d, pill| d.child(pill))
                 .child(
                     div()
                         .flex()

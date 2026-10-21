@@ -12,6 +12,7 @@ pub mod settings;
 pub mod shell;
 mod terminal;
 mod terminal_view;
+pub mod updates;
 
 use gpui_kit::{App, Global, KeyBinding};
 
