@@ -1,5 +1,6 @@
 //! The app shell: windows, tabs, split panes, activity rail and sessions dock.
 
+mod drawer;
 mod pane;
 mod process;
 mod settings_page;
@@ -36,7 +37,8 @@ pub mod actions {
             NextTab,
             PrevTab,
             NewWindow,
-            OpenSettings
+            OpenSettings,
+            ToggleDrawer
         ]
     );
 }
@@ -78,6 +80,7 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new(&format!("{primary}-w"), ClosePane, ctx),
         KeyBinding::new(&format!("{primary}-d"), SplitRight, ctx),
         KeyBinding::new(&format!("{primary}-e"), SplitDown, ctx),
+        KeyBinding::new(&format!("{primary}-b"), ToggleDrawer, ctx),
         KeyBinding::new(&format!("{primary}-n"), NewWindow, ctx),
         KeyBinding::new(
             if cfg!(target_os = "macos") {

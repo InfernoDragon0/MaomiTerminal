@@ -208,8 +208,13 @@ impl TerminalView {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
+        self.insert_text(&text);
+    }
+
+    /// Types `text` at the cursor as a paste (bracketed when the program asked for it).
+    pub fn insert_text(&self, text: &str) {
         let bracketed = self.session.mode().contains(TermMode::BRACKETED_PASTE);
-        self.send_input(input::encode_paste(&text, bracketed));
+        self.send_input(input::encode_paste(text, bracketed));
     }
 
     /// Bytes for `keystroke`: win32-input-mode records when ConPTY asked for them, else VT.

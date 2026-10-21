@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 mod layout;
 
-pub use layout::{Layout, PaneLayout, TabLayout, WindowBounds, WindowLayout};
+pub use layout::{DrawerLayout, Layout, PaneLayout, TabLayout, WindowBounds, WindowLayout};
 
 const FILE_NAME: &str = "config.json";
 /// A file that failed to parse is moved here so the next save does not overwrite it.
@@ -79,6 +79,8 @@ pub struct ShellSettings {
     pub args: Option<Vec<String>>,
     /// Folder new tabs start in; None = the home folder.
     pub startup_dir: Option<PathBuf>,
+    /// Shell-follow default for new file drawers: opening a folder there runs `cd`.
+    pub drawer_follow: bool,
 }
 
 /// Installed builds only; dev builds never update.

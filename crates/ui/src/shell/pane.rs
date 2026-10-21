@@ -1,19 +1,22 @@
-//! One terminal pane: a 28 px header (cwd pill, shell name, running dot, split and close
-//! buttons) over a [`TerminalView`], wrapped in the focus ring.
+//! One terminal pane: a 28 px header (drawer pill, shell name, running dot, split and close
+//! buttons) over an optional file drawer and a [`TerminalView`], wrapped in the focus ring.
 
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    App, AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, linear_color_stop,
     linear_gradient, px,
 };
-use maomi_term::{PromptState, PtySession, SessionOptions};
+use maomi_config::DrawerLayout;
+use maomi_term::{PromptState, PtySession, SessionOptions, ShellKind};
 
-use crate::{Palette, TerminalView, TerminalViewEvent, Theme};
+use super::actions::ToggleDrawer;
+use super::drawer::{self, DraggedPath, DrawerEvent, FileDrawer};
+use crate::{Palette, TerminalView, TerminalViewEvent, Theme, settings};
 
 /// What a pane tells the workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +39,15 @@ pub struct Pane {
     cwd: Option<PathBuf>,
     prompt: PromptState,
     exited: bool,
+    shell_kind: ShellKind,
+    /// Created the first time the drawer opens.
+    drawer: Option<(Entity<FileDrawer>, Subscription)>,
+    drawer_open: bool,
+    drawer_width: f32,
+    /// Shell-follow for a drawer that is not created yet.
+    drawer_follow: bool,
+    /// Mouse x and drawer width when a drag on the drawer's edge began.
+    resizing: Option<(f32, f32)>,
     _terminal_events: Subscription,
 }
 
@@ -54,6 +66,7 @@ impl Pane {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "shell".into());
         let cwd = session.cwd();
+        let shell_kind = session.shell().kind;
         let terminal = cx.new(|cx| TerminalView::with_session(session, options, window, cx));
         let subscription = cx.subscribe(&terminal, |pane, _, event: &TerminalViewEvent, cx| {
             pane.on_terminal_event(event, cx)
@@ -65,8 +78,94 @@ impl Pane {
             cwd,
             prompt: PromptState::Unknown,
             exited: false,
+            shell_kind,
+            drawer: None,
+            drawer_open: false,
+            drawer_width: drawer::DEFAULT_WIDTH,
+            drawer_follow: settings::config(cx).shell.drawer_follow,
+            resizing: None,
             _terminal_events: subscription,
         }
+    }
+
+    /// The drawer's state for the saved layout; None while it was never opened.
+    pub fn drawer_layout(&self, cx: &App) -> Option<DrawerLayout> {
+        let (drawer, _) = self.drawer.as_ref()?;
+        Some(DrawerLayout {
+            open: self.drawer_open,
+            width: self.drawer_width,
+            follow: drawer.read(cx).follow(),
+        })
+    }
+
+    pub fn restore_drawer(
+        &mut self,
+        layout: DrawerLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.drawer_width = layout.width.clamp(drawer::MIN_WIDTH, drawer::MAX_WIDTH);
+        self.drawer_follow = layout.follow;
+        self.ensure_drawer(window, cx);
+        self.drawer_open = layout.open;
+        cx.notify();
+    }
+
+    pub fn toggle_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_drawer(window, cx);
+        self.drawer_open = !self.drawer_open;
+        cx.notify();
+    }
+
+    fn ensure_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.drawer.is_some() {
+            return;
+        }
+        let dir = self
+            .cwd
+            .clone()
+            .or_else(std::env::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let follow = self.drawer_follow;
+        let drawer = cx.new(|cx| FileDrawer::new(dir, follow, window, cx));
+        drawer.update(cx, |d, cx| {
+            d.set_follow_blocked(self.prompt == PromptState::Running, cx)
+        });
+        let events = cx.subscribe_in(
+            &drawer,
+            window,
+            |pane, _, event: &DrawerEvent, window, cx| pane.on_drawer_event(event, window, cx),
+        );
+        self.drawer = Some((drawer, events));
+    }
+
+    fn on_drawer_event(
+        &mut self,
+        event: &DrawerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            DrawerEvent::Insert(path) => self.insert_path(path, window, cx),
+            DrawerEvent::Navigated(dir) => {
+                let follow = self
+                    .drawer
+                    .as_ref()
+                    .is_some_and(|(d, _)| d.read(cx).follow());
+                // Only at a prompt: typing `cd` into a running program would feed it input.
+                if follow && !self.exited && !self.is_busy(cx) {
+                    let line = format!("{}\r", cd_command(self.shell_kind, dir));
+                    self.terminal.read(cx).session().write(line);
+                }
+            }
+        }
+    }
+
+    /// Types `path` (quoted for the shell) and a space at the cursor, then focuses the terminal.
+    fn insert_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let text = format!("{} ", quote_path(self.shell_kind, path));
+        self.terminal.read(cx).insert_text(&text);
+        self.terminal.focus_handle(cx).focus(window, cx);
     }
 
     pub fn terminal(&self) -> &Entity<TerminalView> {
@@ -132,8 +231,19 @@ impl Pane {
                     .clone()
                     .filter(|t| !t.trim().is_empty() && !t.to_ascii_lowercase().ends_with(".exe"));
             }
-            TerminalViewEvent::CwdChanged(path) => self.cwd = Some(path.clone()),
-            TerminalViewEvent::PromptChanged(state) => self.prompt = *state,
+            TerminalViewEvent::CwdChanged(path) => {
+                self.cwd = Some(path.clone());
+                if let Some((drawer, _)) = &self.drawer {
+                    drawer.update(cx, |d, cx| d.set_dir(path.clone(), cx));
+                }
+            }
+            TerminalViewEvent::PromptChanged(state) => {
+                self.prompt = *state;
+                if let Some((drawer, _)) = &self.drawer {
+                    let running = *state == PromptState::Running;
+                    drawer.update(cx, |d, cx| d.set_follow_blocked(running, cx));
+                }
+            }
             TerminalViewEvent::Bell => return,
             TerminalViewEvent::Restarted => {
                 self.exited = false;
@@ -179,7 +289,10 @@ impl Render for Pane {
             .bg(p.surface_2.to_hsla())
             .border_b_1()
             .border_color(p.line.to_hsla())
-            .child(cwd_pill(&self.cwd_name(), p))
+            .child(
+                drawer_pill(&self.cwd_name(), self.drawer_open, p)
+                    .on_click(cx.listener(|pane, _, window, cx| pane.toggle_drawer(window, cx))),
+            )
             .child(div().flex_none().child(self.shell_name.clone()))
             .when(running, |d| {
                 d.child(
@@ -215,7 +328,7 @@ impl Render for Pane {
             .rounded(px(7.))
             .bg(p.surface.to_hsla())
             .child(header)
-            .child(div().flex_1().min_h_0().child(self.terminal.clone()));
+            .child(self.render_body(p, cx));
 
         // Focus ring: a 1 px gradient border (the aurora / fire gradient), else the line colour.
         let ring = div().size_full().p(px(1.)).rounded(px(8.));
@@ -228,34 +341,170 @@ impl Render for Pane {
         } else {
             ring.bg(p.line.to_hsla())
         };
-        ring.child(inner)
+        ring.on_action(
+            cx.listener(|pane, _: &ToggleDrawer, window, cx| pane.toggle_drawer(window, cx)),
+        )
+        // Dragging the drawer's edge: tracked on the whole pane so a fast mouse stays in it.
+        .on_mouse_move(cx.listener(|pane, event: &MouseMoveEvent, _, cx| {
+            let Some((start_x, start_width)) = pane.resizing else {
+                return;
+            };
+            if event.dragging() {
+                let width = start_width + (event.position.x / px(1.)) - start_x;
+                pane.drawer_width = width.clamp(drawer::MIN_WIDTH, drawer::MAX_WIDTH);
+                cx.notify();
+            } else {
+                pane.resizing = None;
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|pane, _, _, _| pane.resizing = None),
+        )
+        .child(inner)
     }
 }
 
-fn cwd_pill(name: &str, p: &Palette) -> impl IntoElement {
+impl Pane {
+    /// Drawer (when open) and its resize edge beside the terminal, which takes dropped paths.
+    fn render_body(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let drawer = self
+            .drawer
+            .as_ref()
+            .filter(|_| self.drawer_open)
+            .map(|(drawer, _)| drawer.clone());
+        let accent = p.accent.to_hsla();
+        div()
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .when_some(drawer, |d, drawer| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .w(px(self.drawer_width))
+                        .h_full()
+                        .border_r_1()
+                        .border_color(p.line.to_hsla())
+                        .child(drawer),
+                )
+                .child(
+                    div()
+                        .id("drawer-resize")
+                        .flex_none()
+                        .w(px(4.))
+                        .h_full()
+                        .cursor_col_resize()
+                        .hover(move |s| s.bg(accent).opacity(0.5))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|pane, event: &gpui_kit::MouseDownEvent, _, cx| {
+                                pane.resizing =
+                                    Some((event.position.x / px(1.), pane.drawer_width));
+                                cx.stop_propagation();
+                            }),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .on_drop(cx.listener(|pane, dragged: &DraggedPath, window, cx| {
+                        pane.insert_path(&dragged.0, window, cx)
+                    }))
+                    // Files dropped from Explorer / Finder too.
+                    .on_drop(cx.listener(|pane, paths: &ExternalPaths, window, cx| {
+                        for path in paths.paths() {
+                            pane.insert_path(path, window, cx);
+                        }
+                    }))
+                    .child(self.terminal.clone()),
+            )
+    }
+}
+
+/// The header's first item: folder icon, cwd folder name and a chevron; opens the drawer.
+fn drawer_pill(name: &str, open: bool, p: &Palette) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let hover = p.surface_3.to_hsla();
     div()
+        .id("drawer-pill")
         .flex()
         .items_center()
-        .gap(px(5.))
+        .gap(px(6.))
         .flex_none()
-        .max_w(px(180.))
-        .h(px(20.))
-        .px(px(7.))
-        .rounded(px(6.))
-        .text_color(p.fg.to_hsla())
-        .bg(p.surface_3.to_hsla())
+        .max_w(px(170.))
+        .h(px(22.))
+        .pl(px(7.))
+        .pr(px(8.))
+        .rounded(px(11.))
+        .border_1()
+        .cursor_pointer()
+        .text_size(px(12.))
+        .map(|d| {
+            if open {
+                d.text_color(p.fg_emph.to_hsla())
+                    .bg(p.accent_soft.to_hsla())
+                    .border_color(p.accent.to_hsla())
+            } else {
+                d.text_color(p.fg.to_hsla())
+                    .bg(p.surface_2.to_hsla())
+                    .border_color(p.line_strong.to_hsla())
+                    .hover(move |s| s.bg(hover))
+            }
+        })
+        .tooltip(|window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new("Files (Ctrl+Shift+B)").build(window, cx)
+        })
         .child(
             Icon::new(IconName::Folder)
-                .size(px(12.))
-                .text_color(p.muted.to_hsla()),
+                .size(px(14.))
+                .text_color(if open { p.accent } else { p.muted }.to_hsla()),
         )
         .child(
             div()
+                .min_w_0()
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
                 .child(name.to_owned()),
         )
+        .child(
+            div()
+                .text_color(p.muted.to_hsla())
+                .child(if open { "‹" } else { "›" }),
+        )
+}
+
+/// `path` as one shell word: single quotes for PowerShell and POSIX shells, double quotes
+/// for cmd (which has no single quotes). Plain paths stay unquoted.
+fn quote_path(kind: ShellKind, path: &Path) -> String {
+    let text = path.display().to_string();
+    let plain = text
+        .chars()
+        .all(|c| c.is_alphanumeric() || "/\\:._-+~".contains(c));
+    if plain {
+        return text;
+    }
+    match kind {
+        ShellKind::Cmd => format!("\"{text}\""),
+        ShellKind::Pwsh | ShellKind::WindowsPowerShell => format!("'{}'", text.replace('\'', "''")),
+        _ => format!("'{}'", text.replace('\'', r"'\''")),
+    }
+}
+
+/// The line that moves `kind`'s shell to `dir`.
+fn cd_command(kind: ShellKind, dir: &Path) -> String {
+    let dir = quote_path(kind, dir);
+    match kind {
+        // `/d` also switches drives.
+        ShellKind::Cmd => format!("cd /d {dir}"),
+        ShellKind::Pwsh | ShellKind::WindowsPowerShell => {
+            format!("Set-Location -LiteralPath {dir}")
+        }
+        _ => format!("cd {dir}"),
+    }
 }
 
 fn header_button(
@@ -298,4 +547,34 @@ pub(crate) fn display_path(path: &Path) -> String {
         };
     }
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_paths_stay_unquoted() {
+        let path = Path::new("src/main.rs");
+        assert_eq!(quote_path(ShellKind::Bash, path), "src/main.rs");
+        assert_eq!(quote_path(ShellKind::Cmd, path), "src/main.rs");
+    }
+
+    #[test]
+    fn quoting_follows_the_shell() {
+        let path = Path::new("my dir/it's");
+        assert_eq!(quote_path(ShellKind::Bash, path), r"'my dir/it'\''s'");
+        assert_eq!(quote_path(ShellKind::Pwsh, path), "'my dir/it''s'");
+        assert_eq!(quote_path(ShellKind::Cmd, path), "\"my dir/it's\"");
+    }
+
+    #[test]
+    fn cd_switches_drives_in_cmd() {
+        let dir = Path::new("D:/a b");
+        assert_eq!(cd_command(ShellKind::Cmd, dir), "cd /d \"D:/a b\"");
+        assert_eq!(
+            cd_command(ShellKind::Pwsh, dir),
+            "Set-Location -LiteralPath 'D:/a b'"
+        );
+    }
 }

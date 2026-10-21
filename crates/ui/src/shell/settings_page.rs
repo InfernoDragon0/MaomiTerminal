@@ -351,7 +351,8 @@ impl SettingsPage {
         )
     }
 
-    fn render_shell(&self, p: &Palette) -> AnyElement {
+    fn render_shell(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let drawer_follow = settings::config(cx).shell.drawer_follow;
         section(
             "Shell",
             p,
@@ -381,6 +382,18 @@ impl SettingsPage {
                     div()
                         .w(px(140.))
                         .child(NumberInput::new(&self.scrollback))
+                        .into_any_element(),
+                ),
+                row(
+                    "File drawer follows into the shell",
+                    Some("Default for new drawers: opening a folder there runs cd in the pane"),
+                    p,
+                    Switch::new("switch-drawer-follow")
+                        .checked(drawer_follow)
+                        .on_click(|on, _, cx| {
+                            let on = *on;
+                            settings::update_config(cx, |c| c.shell.drawer_follow = on);
+                        })
                         .into_any_element(),
                 ),
             ],
@@ -472,7 +485,7 @@ impl Render for SettingsPage {
         let theme = Theme::current(cx);
         let p = theme.palette();
         let appearance = self.render_appearance(theme, p, cx);
-        let shell = self.render_shell(p);
+        let shell = self.render_shell(p, cx);
         let updates = self.render_updates(p, cx);
         div()
             .track_focus(&self.focus_handle)

@@ -57,12 +57,25 @@ pub enum PaneLayout {
     Pane {
         #[serde(default)]
         cwd: Option<PathBuf>,
+        /// None = the pane never opened its drawer.
+        #[serde(default)]
+        drawer: Option<DrawerLayout>,
     },
     Split {
         /// True = children side by side; false = stacked.
         horizontal: bool,
         children: Vec<PaneLayout>,
     },
+}
+
+/// A pane's file drawer.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DrawerLayout {
+    pub open: bool,
+    /// Logical pixels.
+    pub width: f32,
+    /// Opening a folder in the drawer runs `cd` in the shell.
+    pub follow: bool,
 }
 
 impl PaneLayout {
@@ -154,6 +167,11 @@ mod tests {
     fn pane(cwd: &str) -> PaneLayout {
         PaneLayout::Pane {
             cwd: Some(cwd.into()),
+            drawer: Some(DrawerLayout {
+                open: true,
+                width: 240.,
+                follow: false,
+            }),
         }
     }
 

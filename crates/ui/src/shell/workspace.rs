@@ -125,9 +125,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<PaneTree<Entity<Pane>>> {
         match node {
-            PaneLayout::Pane { cwd } => {
+            PaneLayout::Pane { cwd, drawer } => {
                 let cwd = cwd.filter(|dir| dir.is_dir());
-                self.spawn_pane(cwd, window, cx).map(PaneTree::Leaf)
+                let pane = self.spawn_pane(cwd, window, cx)?;
+                if let Some(drawer) = drawer {
+                    pane.update(cx, |pane, cx| pane.restore_drawer(drawer, window, cx));
+                }
+                Some(PaneTree::Leaf(pane))
             }
             PaneLayout::Split {
                 horizontal,
@@ -160,6 +164,7 @@ impl Workspace {
             match tree {
                 PaneTree::Leaf(pane) => PaneLayout::Pane {
                     cwd: pane.read(cx).cwd().map(PathBuf::from),
+                    drawer: pane.read(cx).drawer_layout(cx),
                 },
                 PaneTree::Split { axis, children, .. } => PaneLayout::Split {
                     horizontal: *axis == Axis::Horizontal,
