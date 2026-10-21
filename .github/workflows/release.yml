@@ -51,6 +51,10 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # vpk targets .NET 10; the macOS runner image does not ship that runtime.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
       # Before the build: once the first OS uploads, "latest release" is the new one, and the
       # delta must be built against the previous version.
       - name: Previous release (delta base)
