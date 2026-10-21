@@ -10,9 +10,9 @@ use gpui_kit::component::{Icon, IconName, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Axis, Context, Entity, EntityId, Focusable as _,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PromptLevel, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, WindowBounds,
-    div, linear_color_stop, linear_gradient, px,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PathPromptOptions,
+    PromptLevel, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Window, WindowBounds, div, linear_color_stop, linear_gradient, px,
 };
 use maomi_config::{PaneLayout, TabLayout, WindowLayout};
 use maomi_term::{PtySession, SessionOptions};
@@ -246,7 +246,34 @@ impl Workspace {
     }
 
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pane) = self.spawn_pane(None, window, cx) else {
+        self.new_tab_in(None, window, cx);
+    }
+
+    /// The new-tab button: asks for the folder first when Settings say so. Cancelling still
+    /// opens the tab, in the startup folder.
+    fn new_tab_from_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !settings::config(cx).shell.pick_folder_for_new_tab {
+            self.new_tab(window, cx);
+            return;
+        }
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open in this folder".into()),
+        });
+        cx.spawn_in(window, async move |ws, cx| {
+            let dir = match picked.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
+            };
+            _ = ws.update_in(cx, |ws, window, cx| ws.new_tab_in(dir, window, cx));
+        })
+        .detach();
+    }
+
+    fn new_tab_in(&mut self, cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.spawn_pane(cwd, window, cx) else {
             return;
         };
         self.next_id += 1;
@@ -736,8 +763,9 @@ impl Workspace {
                         .children(tabs),
                 )
                 .child(
-                    title_button("new-tab", IconName::Plus, "New tab (Ctrl+Shift+T)", p)
-                        .on_click(cx.listener(|ws, _, window, cx| ws.new_tab(window, cx))),
+                    title_button("new-tab", IconName::Plus, "New tab (Ctrl+Shift+T)", p).on_click(
+                        cx.listener(|ws, _, window, cx| ws.new_tab_from_button(window, cx)),
+                    ),
                 )
                 .child(div().flex_1().min_w(px(8.)))
                 .when_some(update_pill, |d, pill| d.child(pill))

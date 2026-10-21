@@ -83,6 +83,8 @@ pub struct ShellSettings {
     pub drawer_follow: bool,
     /// Reopen the windows, tabs and splits of the last session at start.
     pub restore_layout: bool,
+    /// The new-tab button asks for the folder the tab starts in.
+    pub pick_folder_for_new_tab: bool,
 }
 
 /// Installed builds only; dev builds never update.
@@ -115,6 +117,7 @@ impl Default for ShellSettings {
             startup_dir: None,
             drawer_follow: false,
             restore_layout: true,
+            pick_folder_for_new_tab: true,
         }
     }
 }

@@ -354,6 +354,7 @@ impl SettingsPage {
     fn render_shell(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let drawer_follow = settings::config(cx).shell.drawer_follow;
         let restore_layout = settings::config(cx).shell.restore_layout;
+        let pick_folder = settings::config(cx).shell.pick_folder_for_new_tab;
         section(
             "Shell",
             p,
@@ -406,6 +407,20 @@ impl SettingsPage {
                         .on_click(|on, _, cx| {
                             let on = *on;
                             settings::update_config(cx, |c| c.shell.restore_layout = on);
+                        })
+                        .into_any_element(),
+                ),
+                row(
+                    "Pick a folder for new tabs",
+                    Some(
+                        "The + button asks where the tab starts; Ctrl+Shift+T opens straight away",
+                    ),
+                    p,
+                    Switch::new("switch-pick-folder")
+                        .checked(pick_folder)
+                        .on_click(|on, _, cx| {
+                            let on = *on;
+                            settings::update_config(cx, |c| c.shell.pick_folder_for_new_tab = on);
                         })
                         .into_any_element(),
                 ),
