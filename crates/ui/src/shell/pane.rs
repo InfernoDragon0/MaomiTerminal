@@ -2,6 +2,7 @@
 //! buttons) over an optional file drawer and a [`TerminalView`], wrapped in the focus ring.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -48,6 +49,10 @@ pub struct Pane {
     title: Option<String>,
     cwd: Option<PathBuf>,
     prompt: PromptState,
+    /// Program the running command started, shown beside the running dot.
+    command: Option<String>,
+    /// Bumped per command so a late lookup for an earlier one is dropped.
+    command_epoch: u64,
     exited: bool,
     shell_kind: ShellKind,
     /// Created the first time the drawer opens.
@@ -87,6 +92,8 @@ impl Pane {
             title: None,
             cwd,
             prompt: PromptState::Unknown,
+            command: None,
+            command_epoch: 0,
             exited: false,
             shell_kind,
             drawer: None,
@@ -249,6 +256,11 @@ impl Pane {
             }
             TerminalViewEvent::PromptChanged(state) => {
                 self.prompt = *state;
+                self.command_epoch += 1;
+                self.command = None;
+                if *state == PromptState::Running {
+                    self.look_up_command(cx);
+                }
                 if let Some((drawer, _)) = &self.drawer {
                     let running = *state == PromptState::Running;
                     drawer.update(cx, |d, cx| d.set_follow_blocked(running, cx));
@@ -258,6 +270,8 @@ impl Pane {
             TerminalViewEvent::Restarted => {
                 self.exited = false;
                 self.prompt = PromptState::Unknown;
+                self.command_epoch += 1;
+                self.command = None;
                 self.title = None;
             }
             TerminalViewEvent::Exited(code) => {
@@ -270,6 +284,39 @@ impl Pane {
         }
         cx.emit(PaneEvent::Changed);
         cx.notify();
+    }
+
+    /// Finds the program the running command started. OSC 133 C arrives before the shell
+    /// spawns it, so the lookup retries a few times.
+    fn look_up_command(&mut self, cx: &mut Context<Self>) {
+        let Some(pid) = self.terminal.read(cx).session().pid() else {
+            return;
+        };
+        let epoch = self.command_epoch;
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            for delay in [100, 400, 1500] {
+                executor.timer(Duration::from_millis(delay)).await;
+                let name = executor
+                    .spawn(async move { super::process::newest_child_name(pid) })
+                    .await;
+                let done = this.update(cx, |pane, cx| {
+                    if pane.command_epoch != epoch {
+                        return true;
+                    }
+                    if name.is_some() {
+                        pane.command = name;
+                        cx.notify();
+                        return true;
+                    }
+                    false
+                });
+                if done.unwrap_or(true) {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 }
 
@@ -314,10 +361,20 @@ impl Render for Pane {
             .when(running, |d| {
                 d.child(
                     div()
-                        .flex_none()
-                        .text_size(px(10.))
-                        .text_color(p.now.to_hsla())
-                        .child("●"),
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(10.))
+                                .text_color(p.now.to_hsla())
+                                .child("●"),
+                        )
+                        .when_some(self.command.clone(), |d, name| {
+                            d.child(div().truncate().child(name))
+                        }),
                 )
             })
             .child(div().flex_1().min_w_0())
