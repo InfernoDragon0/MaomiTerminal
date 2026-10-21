@@ -19,7 +19,7 @@ use maomi_term::{PtySession, SessionOptions};
 
 use super::pane::{Pane, PaneEvent, display_path};
 use super::settings_page::SettingsPage;
-use super::tree::{Direction, PaneTree};
+use super::tree::{Direction, DropZone, PaneTree};
 use super::{LaunchOptions, actions::*};
 use crate::updates::{self, UpdateState};
 use crate::{Mode, Palette, Skin, Theme, set_theme, settings};
@@ -296,6 +296,30 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Moves `moving` onto `target` (beside it, or swapped for the centre zone); both must be
+    /// in the same tab.
+    fn move_pane(
+        &mut self,
+        moving: &Entity<Pane>,
+        target: &Entity<Pane>,
+        zone: DropZone,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tab_of(target) else {
+            return;
+        };
+        let mut next_id = self.next_id;
+        if self.tabs[tab]
+            .tree
+            .move_leaf(moving, target, zone, &mut next_id)
+        {
+            self.next_id = next_id;
+            self.focus_pane(moving, window, cx);
+            cx.notify();
+        }
+    }
+
     /// Pushes the current config into every pane of this window.
     fn apply_settings(&mut self, cx: &mut Context<Self>) {
         let config = settings::config(cx);
@@ -358,6 +382,9 @@ impl Workspace {
             PaneEvent::Changed => cx.notify(),
             PaneEvent::SplitRight => self.split(&pane, Axis::Horizontal, window, cx),
             PaneEvent::SplitDown => self.split(&pane, Axis::Vertical, window, cx),
+            PaneEvent::PaneDropped(moving, zone) => {
+                self.move_pane(moving, &pane, *zone, window, cx)
+            }
             PaneEvent::Close => self.close_pane(pane, false, window, cx),
             PaneEvent::ExitedCleanly => self.close_pane(pane, true, window, cx),
         }

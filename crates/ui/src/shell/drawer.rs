@@ -402,9 +402,9 @@ impl Render for FileDrawer {
     }
 }
 
-/// The floating label under the mouse while a row is dragged.
-struct DragPreview {
-    name: SharedString,
+/// The floating label under the mouse while a row or pane is dragged.
+pub(super) struct DragPreview {
+    pub(super) name: SharedString,
 }
 
 impl Render for DragPreview {

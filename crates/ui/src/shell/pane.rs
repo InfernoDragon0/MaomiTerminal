@@ -6,17 +6,24 @@ use std::path::{Path, PathBuf};
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, linear_color_stop,
-    linear_gradient, px,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, div, linear_color_stop, linear_gradient, px, relative,
 };
 use maomi_config::DrawerLayout;
 use maomi_term::{PromptState, PtySession, SessionOptions, ShellKind};
 
 use super::actions::ToggleDrawer;
-use super::drawer::{self, DraggedPath, DrawerEvent, FileDrawer};
+use super::drawer::{self, DragPreview, DraggedPath, DrawerEvent, FileDrawer};
+use super::tree::DropZone;
 use crate::{Palette, TerminalView, TerminalViewEvent, Theme, settings};
+
+/// Drag payload of a pane picked up by its header.
+#[derive(Clone)]
+pub struct DraggedPane {
+    pane: Entity<Pane>,
+}
 
 /// What a pane tells the workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +32,8 @@ pub enum PaneEvent {
     Changed,
     SplitRight,
     SplitDown,
+    /// Another pane was dropped on this one.
+    PaneDropped(Entity<Pane>, DropZone),
     Close,
     /// The shell exited with code 0; the pane goes away. Other codes keep the pane open
     /// with the restart banner so the error stays readable.
@@ -278,7 +287,14 @@ impl Render for Pane {
         let focused = self.terminal.focus_handle(cx).is_focused(window);
         let running = self.prompt == PromptState::Running && !self.exited;
 
+        let drag_label: SharedString = self.title().into();
         let header = div()
+            .id("pane-header")
+            // Dragging the header moves the pane; drop zones appear on the other panes.
+            .on_drag(DraggedPane { pane: cx.entity() }, move |_, _, _, cx| {
+                let name = drag_label.clone();
+                cx.new(|_| DragPreview { name })
+            })
             .flex()
             .items_center()
             .gap(px(8.))
@@ -384,7 +400,9 @@ impl Pane {
             .filter(|_| self.drawer_open)
             .map(|(drawer, _)| drawer.clone());
         let accent = p.accent.to_hsla();
+        let zones = cx.has_active_drag().then(|| self.render_drop_zones(p, cx));
         div()
+            .relative()
             .flex()
             .flex_1()
             .min_h_0()
@@ -432,6 +450,64 @@ impl Pane {
                     }))
                     .child(self.terminal.clone()),
             )
+            .children(zones)
+    }
+
+    /// Five drop targets over the body while something is dragged: the outer quarters put the
+    /// dragged pane on that side, the middle swaps. Only a dragged pane lights them up, so
+    /// drawer rows still drop through onto the terminal.
+    fn render_drop_zones(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let me = cx.entity_id();
+        let (tint, ring) = (p.accent_soft.to_hsla(), p.accent.to_hsla());
+        let zone = |zone: DropZone| {
+            div()
+                .id(("drop-zone", zone as usize))
+                .absolute()
+                .rounded(px(6.))
+                .drag_over::<DraggedPane>(move |style, dragged, _, _| {
+                    if dragged.pane.entity_id() == me {
+                        style
+                    } else {
+                        style.bg(tint).border_2().border_color(ring)
+                    }
+                })
+                .on_drop(cx.listener(move |pane, dragged: &DraggedPane, _, cx| {
+                    if dragged.pane.entity_id() != cx.entity_id() {
+                        cx.emit(PaneEvent::PaneDropped(dragged.pane.clone(), zone));
+                    }
+                    pane.resizing = None;
+                }))
+        };
+        let (side, band) = (relative(0.25), relative(0.3));
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(zone(DropZone::Left).top_0().left_0().w(side).h_full())
+            .child(zone(DropZone::Right).top_0().right_0().w(side).h_full())
+            .child(
+                zone(DropZone::Top)
+                    .top_0()
+                    .left(side)
+                    .w(relative(0.5))
+                    .h(band),
+            )
+            .child(
+                zone(DropZone::Bottom)
+                    .bottom_0()
+                    .left(side)
+                    .w(relative(0.5))
+                    .h(band),
+            )
+            .child(
+                zone(DropZone::Center)
+                    .top(band)
+                    .left(side)
+                    .w(relative(0.5))
+                    .h(relative(0.4)),
+            )
+            .into_any_element()
     }
 }
 

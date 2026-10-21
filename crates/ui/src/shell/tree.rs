@@ -25,6 +25,16 @@ impl Direction {
     }
 }
 
+/// Where a dragged pane lands on another pane: beside it on one side, or swapped with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropZone {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneTree<T> {
     Leaf(T),
@@ -61,6 +71,11 @@ impl<T: Clone + PartialEq> PaneTree<T> {
     /// Puts `new` next to `target` along `axis` (after it). A split of the same axis gains a
     /// child; otherwise `target` becomes a new two-child split. `next_id` gives split ids.
     pub fn split(&mut self, target: &T, axis: Axis, new: T, next_id: &mut u64) -> bool {
+        self.insert(target, axis, new, false, next_id)
+    }
+
+    /// [`Self::split`], placing `new` before `target` (left / above) when `before` is set.
+    fn insert(&mut self, target: &T, axis: Axis, new: T, before: bool, next_id: &mut u64) -> bool {
         match self {
             Self::Leaf(leaf) if leaf == target => {
                 *next_id += 1;
@@ -74,7 +89,7 @@ impl<T: Clone + PartialEq> PaneTree<T> {
                 );
                 if let Self::Split { children, .. } = self {
                     children.push(old);
-                    children.push(Self::Leaf(new));
+                    children.insert(usize::from(!before), Self::Leaf(new));
                 }
                 true
             }
@@ -89,13 +104,41 @@ impl<T: Clone + PartialEq> PaneTree<T> {
                         .iter()
                         .position(|c| matches!(c, Self::Leaf(l) if l == target))
                 {
-                    children.insert(i + 1, Self::Leaf(new));
+                    children.insert(if before { i } else { i + 1 }, Self::Leaf(new));
                     return true;
                 }
                 children
                     .iter_mut()
-                    .any(|c| c.split(target, axis, new.clone(), next_id))
+                    .any(|c| c.insert(target, axis, new.clone(), before, next_id))
             }
+        }
+    }
+
+    /// Moves leaf `moving` onto `target`: beside it for a side zone, or swaps the two for
+    /// [`DropZone::Center`]. The split `moving` leaves collapses if one child is left.
+    pub fn move_leaf(&mut self, moving: &T, target: &T, zone: DropZone, next_id: &mut u64) -> bool {
+        if moving == target || !self.contains(moving) || !self.contains(target) {
+            return false;
+        }
+        let (axis, before) = match zone {
+            DropZone::Center => {
+                self.swap(moving, target);
+                return true;
+            }
+            DropZone::Left => (Axis::Horizontal, true),
+            DropZone::Right => (Axis::Horizontal, false),
+            DropZone::Top => (Axis::Vertical, true),
+            DropZone::Bottom => (Axis::Vertical, false),
+        };
+        self.remove(moving) && self.insert(target, axis, moving.clone(), before, next_id)
+    }
+
+    fn swap(&mut self, a: &T, b: &T) {
+        match self {
+            Self::Leaf(leaf) if leaf == a => *leaf = b.clone(),
+            Self::Leaf(leaf) if leaf == b => *leaf = a.clone(),
+            Self::Leaf(_) => {}
+            Self::Split { children, .. } => children.iter_mut().for_each(|c| c.swap(a, b)),
         }
     }
 
@@ -227,5 +270,50 @@ mod tests {
         assert_eq!(tree.neighbour(&3, Direction::Up), Some(2));
         assert_eq!(tree.neighbour(&1, Direction::Left), None);
         assert_eq!(tree.neighbour(&2, Direction::Up), None);
+    }
+
+    /// [1 | [2 / 3]]
+    fn three() -> (PaneTree<u32>, u64) {
+        let mut next = 0;
+        let mut tree = PaneTree::Leaf(1);
+        tree.split(&1, Axis::Horizontal, 2, &mut next);
+        tree.split(&2, Axis::Vertical, 3, &mut next);
+        (tree, next)
+    }
+
+    #[test]
+    fn center_swaps() {
+        let (mut tree, mut next) = three();
+        assert!(tree.move_leaf(&1, &3, DropZone::Center, &mut next));
+        assert_eq!(ids(&tree), [3, 2, 1]);
+    }
+
+    #[test]
+    fn side_zones_move_and_collapse() {
+        let (mut tree, mut next) = three();
+        // 3 leaves the vertical split, which collapses into 2; 3 lands left of 1.
+        assert!(tree.move_leaf(&3, &1, DropZone::Left, &mut next));
+        assert_eq!(ids(&tree), [3, 1, 2]);
+        assert!(
+            matches!(&tree, PaneTree::Split { axis: Axis::Horizontal, children, .. } if children.len() == 3),
+            "joins the existing horizontal split"
+        );
+
+        assert!(tree.move_leaf(&2, &1, DropZone::Top, &mut next));
+        assert_eq!(ids(&tree), [3, 2, 1]);
+        assert_eq!(tree.neighbour(&2, Direction::Down), Some(1));
+
+        assert!(tree.move_leaf(&3, &1, DropZone::Bottom, &mut next));
+        assert_eq!(ids(&tree), [2, 1, 3]);
+        assert_eq!(tree.neighbour(&1, Direction::Down), Some(3));
+    }
+
+    #[test]
+    fn dropping_on_itself_does_nothing() {
+        let (mut tree, mut next) = three();
+        let before = tree.clone();
+        assert!(!tree.move_leaf(&2, &2, DropZone::Right, &mut next));
+        assert!(!tree.move_leaf(&9, &2, DropZone::Right, &mut next));
+        assert_eq!(tree, before);
     }
 }
