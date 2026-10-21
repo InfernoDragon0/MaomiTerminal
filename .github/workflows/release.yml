@@ -29,11 +29,11 @@ jobs:
       matrix:
         include:
           # vpk assumes x86 on Windows unless --runtime says otherwise.
-          - { os: windows-latest, channel: win, exe: maomiterminal.exe, runtime: win-x64 }
+          - { os: windows-latest, channel: win, exe: maomiterminal.exe, runtime: win-x64, icon: icon.ico }
           # 22.04 so the AppImage runs on older glibc too.
-          - { os: ubuntu-22.04, channel: linux, exe: maomiterminal, runtime: linux-x64 }
+          - { os: ubuntu-22.04, channel: linux, exe: maomiterminal, runtime: linux-x64, icon: icon.png }
           # Universal binary: no single architecture to name.
-          - { os: macos-latest, channel: osx, exe: maomiterminal, runtime: "" }
+          - { os: macos-latest, channel: osx, exe: maomiterminal, runtime: "", icon: icon.icns }
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -112,7 +112,7 @@ jobs:
           fi
           vpk pack -u "$PACK_ID" -v "${{ steps.version.outputs.version }}" -p publish \
             --mainExe "${{ matrix.exe }}" --packTitle MaomiTerminal --packAuthors maomi \
-            -o Releases "${extra[@]}"
+            --icon "packaging/icon/${{ matrix.icon }}" -o Releases "${extra[@]}"
 
       # The first OS to finish creates the release and the others merge into it. Retried in case
       # two jobs try to create it at the same moment.

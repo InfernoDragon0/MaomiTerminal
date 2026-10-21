@@ -1,0 +1,38 @@
+{
+  "id": "app-icon",
+  "title": "App icon",
+  "status": "draft",
+  "version": 3,
+  "versions": [
+    {
+      "v": 1,
+      "at": 1792553098239,
+      "bytes": 9970,
+      "by": "9195abc8-5e21-4070-9995-bbda8a43844a",
+      "note": "Three icon variants (tile, cat head, window), pinned to Aurora dark tokens."
+    },
+    {
+      "v": 2,
+      "at": 1792553104638,
+      "bytes": 9987,
+      "by": "9195abc8-5e21-4070-9995-bbda8a43844a"
+    },
+    {
+      "v": 3,
+      "at": 1792553343621,
+      "bytes": 10020,
+      "by": "9195abc8-5e21-4070-9995-bbda8a43844a",
+      "note": "User picked A (Tile) 2026-10-21. Fixed the `_` not painting (bbox gradient on a flat line)."
+    }
+  ],
+  "createdAt": 1792553098239,
+  "updatedAt": 1792553343621,
+  "plans": [
+    {
+      "plan": "p-mvg50cth6ccf",
+      "milestone": "m-mvg50ctjn0fm"
+    }
+  ],
+  "plan": "p-mvg50cth6ccf",
+  "milestone": "m-mvg50ctjn0fm"
+}

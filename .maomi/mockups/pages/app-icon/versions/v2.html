@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en" data-theme="aurora-dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App icon</title>
+<link rel="stylesheet" href="../../_system/tokens.css">
+<link rel="stylesheet" href="../../_system/components.css">
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 "Segoe UI", system-ui, sans-serif; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 40px; display: flex; flex-direction: column; gap: 18px; }
+.top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.top h1 { margin: 0; font-size: 20px; font-weight: 600; color: var(--fg-emph); }
+.top .sub { color: var(--muted); }
+.top .sp { flex: 1; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.variant { display: flex; flex-direction: column; gap: 14px; }
+.variant .card-head { display: flex; align-items: center; gap: 8px; }
+.variant .card-head h2 { margin: 0; font-size: 15px; }
+.variant p { margin: 0; color: var(--muted); }
+.hero { display: grid; place-items: center; padding: 18px 0; }
+.hero svg { width: 192px; height: 192px; }
+/* Each strip pins its own theme so the icon is seen on a dark and a light desktop. */
+.strip { display: flex; align-items: flex-end; gap: 18px; padding: 14px 16px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+.strip figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.taskbar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line); }
+.taskbar .slot { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 6px; }
+.taskbar .slot.on { background: var(--surface-3); }
+.taskbar .ghost { width: 24px; height: 24px; border-radius: 6px; background: var(--surface-3); }
+.taskbar svg { width: 24px; height: 24px; }
+.pin { display: contents; }
+</style>
+</head>
+<body>
+<!-- Icon art. Every colour is a token; the <span data-theme="aurora-dark"> around each use pins
+     the icon to Aurora dark so it stays the same in every page theme (an app icon has fixed colours). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" data-theme="aurora-dark">
+  <defs>
+    <linearGradient id="g-aurora" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" style="stop-color: var(--c1)"/>
+      <stop offset=".38" style="stop-color: var(--c2)"/>
+      <stop offset=".7" style="stop-color: var(--c3)"/>
+      <stop offset="1" style="stop-color: var(--c4)"/>
+    </linearGradient>
+    <linearGradient id="g-ear" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" style="stop-color: var(--c3)"/>
+      <stop offset="1" style="stop-color: var(--c2)"/>
+    </linearGradient>
+
+    <!-- A · Tile: dark rounded tile, gradient ears poking out of the top edge. -->
+    <symbol id="icon-a" viewBox="0 0 64 64">
+      <path d="M9 24 L12 4.5 L27 15 Z" fill="url(#g-aurora)" stroke="url(#g-aurora)" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M55 24 L52 4.5 L37 15 Z" fill="url(#g-aurora)" stroke="url(#g-aurora)" stroke-width="3" stroke-linejoin="round"/>
+      <rect x="5" y="13" width="54" height="47" rx="13" style="fill: var(--surface-2)" stroke="url(#g-aurora)" stroke-width="3"/>
+      <path d="M18 29 L27.5 36.5 L18 44" fill="none" style="stroke: var(--white)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M32 45 H45" fill="none" stroke="url(#g-aurora)" stroke-width="5" stroke-linecap="round"/>
+    </symbol>
+
+    <!-- B · Cat head: the whole head is the gradient, the prompt is cut out in the background colour. -->
+    <symbol id="icon-b" viewBox="0 0 64 64">
+      <path d="M8 31 C7 22 8 13 10.5 4.5 L25 14.5 C29.5 13.3 34.5 13.3 39 14.5 L53.5 4.5 C56 13 57 22 56 31 C55.5 48 46 59 32 59 C18 59 8.5 48 8 31 Z" fill="url(#g-aurora)"/>
+      <path d="M14 11 L22.5 16.5 L15.5 20 Z" style="fill: var(--surface-2)" opacity=".35"/>
+      <path d="M50 11 L41.5 16.5 L48.5 20 Z" style="fill: var(--surface-2)" opacity=".35"/>
+      <path d="M19 30 L28 37 L19 44" fill="none" style="stroke: var(--bg)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M32 45 H44.5" fill="none" style="stroke: var(--bg)" stroke-width="5.5" stroke-linecap="round"/>
+    </symbol>
+
+    <!-- C · Window: a terminal window whose title bar grows ears, pink inner ears and blush. -->
+    <symbol id="icon-c" viewBox="0 0 64 64">
+      <path d="M7 22 L10 4 L25 14 Z" style="fill: var(--surface-3)" stroke-linejoin="round"/>
+      <path d="M57 22 L54 4 L39 14 Z" style="fill: var(--surface-3)" stroke-linejoin="round"/>
+      <path d="M11 17 L12.5 9 L19.5 14 Z" fill="url(#g-ear)"/>
+      <path d="M53 17 L51.5 9 L44.5 14 Z" fill="url(#g-ear)"/>
+      <rect x="4" y="13" width="56" height="47" rx="10" style="fill: var(--bg); stroke: var(--surface-3)" stroke-width="3"/>
+      <path d="M5.5 23 V21 Q5.5 14.5 12 14.5 H52 Q58.5 14.5 58.5 21 V23 Z" fill="url(#g-aurora)"/>
+      <path d="M15 32 L23 38 L15 44" fill="none" style="stroke: var(--ok)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M27 45 H38" fill="none" style="stroke: var(--ok)" stroke-width="4.5" stroke-linecap="round"/>
+      <ellipse cx="45" cy="40" rx="5" ry="2.6" style="fill: var(--c3)" opacity=".45"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <div class="top">
+    <h1>App icon</h1>
+    <span class="sub">Three takes on a <code>&gt;_</code> prompt with cat ears. Colours are fixed (Aurora) in every theme.</span>
+    <span class="sp"></span>
+    <div class="seg" id="seg-theme">
+      <button data-v="aurora-dark">Aurora dark</button>
+      <button data-v="aurora-light">Aurora light</button>
+      <button data-v="onyx-dark">Onyx dark</button>
+      <button data-v="onyx-light">Onyx light</button>
+      <button data-v="mochi">Mochi</button>
+    </div>
+  </div>
+
+  <div class="grid" id="variants"></div>
+
+  <div class="card card-pad">
+    <div class="sect-title">Taskbar, 24 px</div>
+    <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:10px">
+      <div class="taskbar" data-theme="aurora-dark">
+        <span class="ghost"></span><span class="ghost"></span>
+        <span class="slot on"><span class="pin" data-theme="aurora-dark"><svg><use href="#icon-a"/></svg></span></span>
+        <span class="slot"><span class="pin" data-theme="aurora-dark"><svg><use href="#icon-b"/></svg></span></span>
+        <span class="slot"><span class="pin" data-theme="aurora-dark"><svg><use href="#icon-c"/></svg></span></span>
+        <span class="ghost"></span>
+      </div>
+      <div class="taskbar" data-theme="aurora-light">
+        <span class="ghost"></span><span class="ghost"></span>
+        <span class="slot on"><span class="pin" data-theme="aurora-dark"><svg><use href="#icon-a"/></svg></span></span>
+        <span class="slot"><span class="pin" data-theme="aurora-dark"><svg><use href="#icon-b"/></svg></span></span>
+        <span class="slot"><span class="pin" data-theme="aurora-dark"><svg><use href="#icon-c"/></svg></span></span>
+        <span class="ghost"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<template id="tpl-variant">
+  <div class="card card-pad variant">
+    <div class="card-head"><h2 class="nm"></h2><span class="chip"><span class="dot"></span><span class="tag"></span></span></div>
+    <p class="why"></p>
+    <div class="hero"><span class="pin" data-theme="aurora-dark"><svg><use/></svg></span></div>
+    <div class="strip sizes" data-theme="aurora-dark"></div>
+    <div class="strip sizes" data-theme="aurora-light"></div>
+  </div>
+</template>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var valid = ["aurora-dark", "aurora-light", "onyx-dark", "onyx-light", "mochi"];
+  var q = new URLSearchParams(location.search).get("theme");
+  if (valid.indexOf(q) < 0) { q = null; try { var s = localStorage.getItem("maomi-theme"); if (valid.indexOf(s) >= 0) q = s; } catch (e) {} }
+  function set(t) {
+    root.setAttribute("data-theme", t);
+    document.querySelectorAll("#seg-theme button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-v") === t); });
+    try { localStorage.setItem("maomi-theme", t); } catch (e) {}
+  }
+  set(q || "aurora-dark");
+  document.getElementById("seg-theme").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (b) set(b.getAttribute("data-v"));
+  });
+
+  var VARIANTS = [
+    { id: "a", name: "A · Tile", tag: "Clean", why: "Dark rounded tile like most terminal icons, with gradient ears on top. Reads well at every size." },
+    { id: "b", name: "B · Cat head", tag: "Bold", why: "The whole icon is a cat head in the Aurora gradient, prompt cut out of it. Most recognisable from far away." },
+    { id: "c", name: "C · Window", tag: "Cute", why: "A terminal window whose title bar grows ears, with pink inner ears, a green prompt and a blush." }
+  ];
+  var SIZES = [64, 48, 32, 16];
+  var tpl = document.getElementById("tpl-variant"), host = document.getElementById("variants");
+  VARIANTS.forEach(function (v) {
+    var n = tpl.content.cloneNode(true);
+    n.querySelector(".nm").textContent = v.name;
+    n.querySelector(".tag").textContent = v.tag;
+    n.querySelector(".why").textContent = v.why;
+    n.querySelector(".hero use").setAttribute("href", "#icon-" + v.id);
+    n.querySelectorAll(".sizes").forEach(function (strip) {
+      SIZES.forEach(function (px) {
+        var f = document.createElement("figure");
+        f.innerHTML = '<span class="pin" data-theme="aurora-dark"><svg width="' + px + '" height="' + px + '"><use href="#icon-' + v.id + '"/></svg></span><span>' + px + "</span>";
+        strip.appendChild(f);
+      });
+    });
+    host.appendChild(n);
+  });
+})();
+</script>
+</body>
+</html>

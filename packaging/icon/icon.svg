@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512">
+  <!-- MaomiTerminal app icon (mockup app-icon, variant A "Tile"). Colours = Aurora dark tokens:
+       c1 #5b8cff, c2 #aa71ff, c3 #ff6bb5, c4 #ffa25b, surface-2 #1f1f28, white #ececf2.
+       Regenerate the .ico/.png/.icns with packaging/icon/build.py after editing. -->
+  <defs>
+    <!-- userSpaceOnUse: a bounding-box gradient cannot paint the flat `_` line (zero height). -->
+    <linearGradient id="aurora" gradientUnits="userSpaceOnUse" x1="4" y1="4" x2="60" y2="60">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset=".38" stop-color="#aa71ff"/>
+      <stop offset=".7" stop-color="#ff6bb5"/>
+      <stop offset="1" stop-color="#ffa25b"/>
+    </linearGradient>
+  </defs>
+  <path d="M9 24 L12 4.5 L27 15 Z" fill="url(#aurora)" stroke="url(#aurora)" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M55 24 L52 4.5 L37 15 Z" fill="url(#aurora)" stroke="url(#aurora)" stroke-width="3" stroke-linejoin="round"/>
+  <rect x="5" y="13" width="54" height="47" rx="13" fill="#1f1f28" stroke="url(#aurora)" stroke-width="3"/>
+  <path d="M18 29 L27.5 36.5 L18 44" fill="none" stroke="#ececf2" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M32 45 H45" fill="none" stroke="url(#aurora)" stroke-width="5" stroke-linecap="round"/>
+</svg>
