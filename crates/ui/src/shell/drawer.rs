@@ -13,8 +13,9 @@ use gpui_kit::component::{Icon, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, UniformListScrollHandle, Window, div, px, uniform_list,
+    IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, Window,
+    div, px, uniform_list,
 };
 
 use crate::{Palette, Theme};
@@ -345,6 +346,32 @@ impl FileDrawer {
                     }))
                     .child(Icon::new(gpui_kit::assets::IconName::Link).size(px(14.))),
             )
+            .child(
+                toggle_button("drawer-pick", false, false, p)
+                    .tooltip(|window, cx| Tooltip::new("Go to a folder…").build(window, cx))
+                    .on_click(cx.listener(|drawer, _, window, cx| drawer.pick_folder(window, cx)))
+                    .child(Icon::new(gpui_kit::assets::IconName::FolderSearch).size(px(14.))),
+            )
+    }
+
+    /// Opens the system folder picker and navigates to the chosen folder.
+    fn pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Go to folder".into()),
+        });
+        cx.spawn_in(window, async move |drawer, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(dir) = paths.into_iter().next() else {
+                return;
+            };
+            _ = drawer.update_in(cx, |drawer, window, cx| drawer.navigate(dir, window, cx));
+        })
+        .detach();
     }
 }
 
