@@ -2,7 +2,22 @@
 
 A cross-platform terminal app written in Rust on [GPUI](https://www.gpui.rs/) (the UI framework behind Zed). The terminal engine is [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal) with [`portable-pty`](https://crates.io/crates/portable-pty) for shells.
 
-> Status: early scaffold. The app opens an empty window.
+> Status: pre-release. Local shells in tabs and split panes, multiple windows, settings.
+
+## Install
+
+Download the installer for your OS from [Releases](https://github.com/InfernoDragon0/MaomiTerminal/releases). The app updates itself: it downloads new releases in the background and installs them when you quit (Settings > Updates turns this off).
+
+| OS | File | Notes |
+|---|---|---|
+| Windows | `MaomiTerminal-win-Setup.exe` | Installs for the current user, no admin needed. |
+| macOS | `MaomiTerminal-osx-Setup.pkg` | Universal (Apple silicon and Intel). |
+| Linux | `MaomiTerminal.AppImage` | `chmod +x` it and run. |
+
+Builds are not code-signed, so the OS warns on first launch:
+
+- **Windows SmartScreen:** click **More info**, then **Run anyway**. Updates install without the prompt.
+- **macOS Gatekeeper:** open the app once, then go to System Settings > Privacy & Security and click **Open Anyway**.
 
 ## Layout
 
@@ -29,6 +44,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
 ```
+
+## Releasing
+
+The version lives only in the root `Cargo.toml` (`[workspace.package] version`).
+
+1. Bump the version and commit.
+2. Push a tag `v<version>` (for example `v0.2.0`). The tag must match `Cargo.toml` or the workflow stops.
+3. `.github/workflows/release.yml` builds Windows, macOS (universal) and Linux, packs each with [Velopack](https://velopack.io), and publishes one GitHub release. Installed apps pick it up as an update.
+4. Optional: update `packaging/winget/` (version, URL, `winget hash` of the Setup.exe) and open a PR on `microsoft/winget-pkgs`.
+
+The `velopack` crate in `Cargo.toml` and `VPK_VERSION` in `release.yml` must stay on the same version.
 
 ## Licence
 

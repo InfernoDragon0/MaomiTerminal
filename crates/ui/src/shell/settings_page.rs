@@ -21,7 +21,7 @@ use crate::{Mode, Palette, Skin, TERMINAL_FAMILY, Theme, set_theme};
 
 type LabelSelect = SelectState<SearchableVec<SharedString>>;
 
-const SECTIONS: [&str; 3] = ["Appearance", "Shell", "Keybindings"];
+const SECTIONS: [&str; 4] = ["Appearance", "Shell", "Updates", "Keybindings"];
 
 pub struct SettingsPage {
     focus_handle: FocusHandle,
@@ -383,6 +383,39 @@ impl SettingsPage {
             ],
         )
     }
+
+    fn render_updates(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let auto = settings::config(cx).updates.auto;
+        section(
+            "Updates",
+            p,
+            vec![
+                row(
+                    "Automatic updates",
+                    Some(
+                        "Downloads new releases in the background and installs them when you quit",
+                    ),
+                    p,
+                    Switch::new("switch-updates")
+                        .checked(auto)
+                        .on_click(|on, _, cx| {
+                            let on = *on;
+                            settings::update_config(cx, |c| c.updates.auto = on);
+                        })
+                        .into_any_element(),
+                ),
+                row(
+                    "Version",
+                    None,
+                    p,
+                    div()
+                        .text_color(p.muted.to_hsla())
+                        .child(env!("CARGO_PKG_VERSION"))
+                        .into_any_element(),
+                ),
+            ],
+        )
+    }
 }
 
 impl Focusable for SettingsPage {
@@ -397,6 +430,7 @@ impl Render for SettingsPage {
         let p = theme.palette();
         let appearance = self.render_appearance(theme, p, cx);
         let shell = self.render_shell(p);
+        let updates = self.render_updates(p, cx);
         div()
             .track_focus(&self.focus_handle)
             .flex()
@@ -434,6 +468,7 @@ impl Render for SettingsPage {
                             )
                             .child(appearance)
                             .child(shell)
+                            .child(updates)
                             .child(keybindings(p)),
                     ),
             )

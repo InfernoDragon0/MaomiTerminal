@@ -7,7 +7,13 @@ use maomi_config::Layout;
 use maomi_ui::shell::{self, LaunchOptions};
 use tracing_subscriber::EnvFilter;
 
+mod updater;
+
 fn main() {
+    // Must run first: the installer and updater start the exe with hook arguments, and an update
+    // downloaded earlier but never applied is installed here (which restarts the app).
+    velopack::VelopackApp::build().run();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("MAOMITERMINAL_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
@@ -34,6 +40,7 @@ fn main() {
         .run(move |cx| {
             gpui_kit::init(cx);
             maomi_ui::init(config, cx);
+            updater::init(cx);
             if layout.windows.is_empty() {
                 shell::open_window(launch.clone(), cx);
             }

@@ -1,0 +1,16 @@
+PackageIdentifier: InfernoDragon0.MaomiTerminal
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: InfernoDragon0
+PublisherUrl: https://github.com/InfernoDragon0
+PackageName: MaomiTerminal
+PackageUrl: https://github.com/InfernoDragon0/MaomiTerminal
+License: Apache-2.0
+LicenseUrl: https://github.com/InfernoDragon0/MaomiTerminal/blob/main/LICENSE
+ShortDescription: Cross-platform terminal with tabs, split panes and themes, built in Rust on GPUI.
+Tags:
+  - terminal
+  - console
+  - shell
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

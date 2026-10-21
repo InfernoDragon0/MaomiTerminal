@@ -28,6 +28,8 @@ which = "8"
 # Only the process API (cwd fallback); the default features pull in disks, networks and WMI.
 sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 etcetera = "0.11"
+# Installer + auto-update runtime; keep in step with the `vpk` CLI version in release.yml.
+velopack = "=1.2.161"
 
 maomi-ui = { path = "crates/ui" }
 maomi-term = { path = "crates/term" }

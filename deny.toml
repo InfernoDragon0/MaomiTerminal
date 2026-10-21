@@ -55,3 +55,11 @@ allow-git = []
 # Unmaintained notices for deep GPUI deps are not actionable here; vulnerabilities still fail.
 unmaintained = "none"
 yanked = "deny"
+ignore = [
+    # zip 8.6 via velopack 1.2.161: symlink escapes in `ZipArchive::extract` / `ZipStreamReader::extract`.
+    # Velopack only reads entries one by one (bundle.rs `extract_zip_*`), never those two calls.
+    # Drop both when velopack ships a stable release on zip >= 9.
+    { id = "RUSTSEC-2026-0368", reason = "velopack never calls ZipArchive::extract" },
+    { id = "RUSTSEC-2026-0369", reason = "velopack never calls ZipStreamReader::extract" },
+    { id = "RUSTSEC-2026-0367", reason = "SUID bits via ZipArchive::extract only; velopack never calls it" },
+]

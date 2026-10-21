@@ -1,0 +1,8 @@
+# Draft for microsoft/winget-pkgs (manifests/i/InfernoDragon0/MaomiTerminal/<version>/).
+# Per release: set PackageVersion in all three files, the InstallerUrl tag and InstallerSha256
+# (`winget hash MaomiTerminal-win-Setup.exe`), then validate with `winget validate <folder>`.
+PackageIdentifier: InfernoDragon0.MaomiTerminal
+PackageVersion: 0.1.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.9.0

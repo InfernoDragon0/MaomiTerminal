@@ -41,6 +41,7 @@ pub struct Config {
     pub appearance: Appearance,
     pub terminal: TerminalSettings,
     pub shell: ShellSettings,
+    pub updates: UpdateSettings,
 }
 
 /// Skin and mode, by name so this crate stays UI-free; the UI maps unknown names to its defaults.
@@ -80,6 +81,14 @@ pub struct ShellSettings {
     pub startup_dir: Option<PathBuf>,
 }
 
+/// Installed builds only; dev builds never update.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Download new releases in the background and install them when the app quits.
+    pub auto: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -87,7 +96,14 @@ impl Default for Config {
             appearance: Appearance::default(),
             terminal: TerminalSettings::default(),
             shell: ShellSettings::default(),
+            updates: UpdateSettings::default(),
         }
+    }
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { auto: true }
     }
 }
 
@@ -303,6 +319,7 @@ mod tests {
         assert_eq!(config.terminal.font_size, 16.0);
         assert!(config.terminal.smooth_scroll);
         assert_eq!(config.appearance, Appearance::default());
+        assert!(config.updates.auto);
     }
 
     #[test]

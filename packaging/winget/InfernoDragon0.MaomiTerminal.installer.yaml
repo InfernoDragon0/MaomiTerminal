@@ -1,0 +1,19 @@
+PackageIdentifier: InfernoDragon0.MaomiTerminal
+PackageVersion: 0.1.0
+InstallerType: exe
+# Velopack installs per user into %LocalAppData%\MaomiTerminal, no admin needed.
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+InstallerSwitches:
+  Silent: --silent
+  SilentWithProgress: --silent
+# The app updates itself; winget should not reinstall over it.
+UpgradeBehavior: deny
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/InfernoDragon0/MaomiTerminal/releases/download/v0.1.0/MaomiTerminal-win-Setup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.9.0
