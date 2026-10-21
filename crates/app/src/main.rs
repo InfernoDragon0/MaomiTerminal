@@ -29,7 +29,7 @@ fn main() {
     let launch = dev_launch_options();
     // Dev switches start one fresh window so perf runs are repeatable.
     let dev = launch.run.is_some() || launch.panes > 1;
-    let layout = if dev {
+    let layout = if dev || !config.shell.restore_layout {
         Layout::default()
     } else {
         Layout::load()

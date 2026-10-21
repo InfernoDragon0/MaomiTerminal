@@ -353,6 +353,7 @@ impl SettingsPage {
 
     fn render_shell(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let drawer_follow = settings::config(cx).shell.drawer_follow;
+        let restore_layout = settings::config(cx).shell.restore_layout;
         section(
             "Shell",
             p,
@@ -393,6 +394,18 @@ impl SettingsPage {
                         .on_click(|on, _, cx| {
                             let on = *on;
                             settings::update_config(cx, |c| c.shell.drawer_follow = on);
+                        })
+                        .into_any_element(),
+                ),
+                row(
+                    "Reopen windows and tabs",
+                    Some("At start, bring back the windows, tabs and splits from last time"),
+                    p,
+                    Switch::new("switch-restore-layout")
+                        .checked(restore_layout)
+                        .on_click(|on, _, cx| {
+                            let on = *on;
+                            settings::update_config(cx, |c| c.shell.restore_layout = on);
                         })
                         .into_any_element(),
                 ),
@@ -487,6 +500,19 @@ impl Render for SettingsPage {
         let appearance = self.render_appearance(theme, p, cx);
         let shell = self.render_shell(p, cx);
         let updates = self.render_updates(p, cx);
+        let heading = div()
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .text_color(p.fg_emph.to_hsla())
+                    .child("Settings"),
+            )
+            .child(
+                div()
+                    .text_color(p.muted.to_hsla())
+                    .child("Changes apply to every window straight away."),
+            )
+            .into_any_element();
         div()
             .track_focus(&self.focus_handle)
             .flex()
@@ -494,38 +520,22 @@ impl Render for SettingsPage {
             .min_h_0()
             .child(self.render_nav(p, cx))
             .child(
+                // The nav scrolls to items by index, so the heading and sections must be direct
+                // children of the tracked element.
                 div()
                     .id("settings-scroll")
                     .flex_1()
                     .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(22.))
+                    .px(px(28.))
+                    .py(px(24.))
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(22.))
-                            .max_w(px(760.))
-                            .px(px(28.))
-                            .py(px(24.))
-                            .child(
-                                div()
-                                    .child(
-                                        div()
-                                            .text_size(px(20.))
-                                            .text_color(p.fg_emph.to_hsla())
-                                            .child("Settings"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(p.muted.to_hsla())
-                                            .child("Changes apply to every window straight away."),
-                                    ),
-                            )
-                            .child(appearance)
-                            .child(shell)
-                            .child(updates)
-                            .child(keybindings(p)),
+                    .children(
+                        [heading, appearance, shell, updates, keybindings(p)]
+                            .map(|item| div().flex_none().max_w(px(760.)).child(item)),
                     ),
             )
     }

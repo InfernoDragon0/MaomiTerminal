@@ -71,7 +71,7 @@ pub struct TerminalSettings {
 }
 
 /// The shell new tabs start. `program: None` picks the best one found on the machine.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellSettings {
     pub program: Option<PathBuf>,
@@ -81,6 +81,8 @@ pub struct ShellSettings {
     pub startup_dir: Option<PathBuf>,
     /// Shell-follow default for new file drawers: opening a folder there runs `cd`.
     pub drawer_follow: bool,
+    /// Reopen the windows, tabs and splits of the last session at start.
+    pub restore_layout: bool,
 }
 
 /// Installed builds only; dev builds never update.
@@ -101,6 +103,18 @@ impl Default for Config {
             terminal: TerminalSettings::default(),
             shell: ShellSettings::default(),
             updates: UpdateSettings::default(),
+        }
+    }
+}
+
+impl Default for ShellSettings {
+    fn default() -> Self {
+        Self {
+            program: None,
+            args: None,
+            startup_dir: None,
+            drawer_follow: false,
+            restore_layout: true,
         }
     }
 }
@@ -318,6 +332,12 @@ mod tests {
         assert_eq!(config.appearance.skin, "mochi");
         assert_eq!(config.appearance.mode, "light");
         assert_eq!(config.terminal, TerminalSettings::default());
+    }
+
+    #[test]
+    fn restore_layout_defaults_on_for_older_files() {
+        let config = Config::parse(r#"{"version": 1, "shell": {"drawer_follow": true}}"#).unwrap();
+        assert!(config.shell.restore_layout);
     }
 
     #[test]
