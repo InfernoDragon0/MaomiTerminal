@@ -10,7 +10,8 @@ Download the installer for your OS from [Releases](https://github.com/InfernoDra
 
 | OS | File | Notes |
 |---|---|---|
-| Windows | `MaomiTerminal-win-Setup.exe` | Installs for the current user, no admin needed. |
+| Windows | `MaomiTerminal-win-Setup.exe` | Installs for the current user into `%LocalAppData%\MaomiTerminal`, no admin needed. For another folder run `MaomiTerminal-win-Setup.exe --installto "D:\Apps\MaomiTerminal"`. |
+| Windows (portable) | `MaomiTerminal-win-Portable.zip` | Unzip anywhere and run `MaomiTerminal.exe`. |
 | macOS | `MaomiTerminal-osx-Setup.pkg` | Universal (Apple silicon and Intel). |
 | Linux | `MaomiTerminal.AppImage` | `chmod +x` it and run. |
 
