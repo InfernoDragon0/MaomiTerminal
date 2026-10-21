@@ -1,16 +1,9 @@
 {
   "id": "app-icon",
   "title": "App icon",
-  "status": "draft",
+  "status": "approved",
   "version": 3,
   "versions": [
-    {
-      "v": 1,
-      "at": 1792553098239,
-      "bytes": 9970,
-      "by": "9195abc8-5e21-4070-9995-bbda8a43844a",
-      "note": "Three icon variants (tile, cat head, window), pinned to Aurora dark tokens."
-    },
     {
       "v": 2,
       "at": 1792553104638,
@@ -26,7 +19,7 @@
     }
   ],
   "createdAt": 1792553098239,
-  "updatedAt": 1792553343621,
+  "updatedAt": 1792565300308,
   "plans": [
     {
       "plan": "p-mvg50cth6ccf",
@@ -34,5 +27,6 @@
     }
   ],
   "plan": "p-mvg50cth6ccf",
-  "milestone": "m-mvg50ctjn0fm"
+  "milestone": "m-mvg50ctjn0fm",
+  "approvedVersion": 3
 }
