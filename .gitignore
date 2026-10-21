@@ -4,3 +4,5 @@ target/
 .DS_Store
 *claude*
 tools
+# Maomi Plans board: local only (the dev journal is not published).
+.maomi/board/
