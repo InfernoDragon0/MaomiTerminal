@@ -4,10 +4,12 @@
 use std::sync::{Mutex, PoisonError};
 
 use gpui_kit::App;
-use velopack::sources::GithubSource;
+use velopack::sources::AutoSource;
 use velopack::{UpdateCheck, UpdateInfo, UpdateManager};
 
 const REPO_URL: &str = "https://github.com/InfernoDragon0/MaomiTerminal";
+/// Test switch: a local release folder or another feed URL instead of GitHub Releases.
+const FEED_ENV: &str = "MAOMI_UPDATE_URL";
 
 /// A downloaded release waiting for the app to quit.
 static PENDING: Mutex<Option<(UpdateManager, UpdateInfo)>> = Mutex::new(None);
@@ -39,10 +41,10 @@ pub fn init(cx: &mut App) {
 }
 
 fn download() -> Result<(), velopack::Error> {
-    let source = GithubSource::new(REPO_URL, None, false);
-    let manager = match UpdateManager::new(source, None, None) {
+    let feed = std::env::var(FEED_ENV).unwrap_or_else(|_| REPO_URL.into());
+    let manager = match UpdateManager::new(AutoSource::new(&feed), None, None) {
         Ok(manager) => manager,
-        // `cargo run` and portable copies are not installed; nothing to update.
+        // `cargo run` builds are not installed; nothing to update.
         Err(err) => {
             tracing::debug!(%err, "not an installed build, updates off");
             return Ok(());
@@ -51,8 +53,9 @@ fn download() -> Result<(), velopack::Error> {
     let UpdateCheck::UpdateAvailable(update) = manager.check_for_updates()? else {
         return Ok(());
     };
-    tracing::info!(version = %update.TargetFullRelease.Version, "downloading update");
+    tracing::info!(%feed, version = %update.TargetFullRelease.Version, "downloading update");
     manager.download_updates(&update, None)?;
+    tracing::info!("update downloaded, installs on quit");
     *PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some((manager, *update));
     Ok(())
 }
