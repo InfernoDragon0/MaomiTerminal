@@ -357,6 +357,7 @@ impl Workspace {
         match event {
             PaneEvent::Changed => cx.notify(),
             PaneEvent::SplitRight => self.split(&pane, Axis::Horizontal, window, cx),
+            PaneEvent::SplitDown => self.split(&pane, Axis::Vertical, window, cx),
             PaneEvent::Close => self.close_pane(pane, false, window, cx),
             PaneEvent::ExitedCleanly => self.close_pane(pane, true, window, cx),
         }

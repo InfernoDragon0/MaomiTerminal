@@ -5,10 +5,7 @@ use std::borrow::Cow;
 use gpui_kit::{AssetSource, Result, SharedString};
 
 /// Lucide icons (ISC) outside gpui-kit's default set, at the paths their `IconName` uses.
-const ICONS: &[(&str, &[u8])] = &[(
-    "icons/link.svg",
-    include_bytes!("../assets/icons/link.svg"),
-)];
+const ICONS: &[(&str, &[u8])] = &[("icons/link.svg", include_bytes!("../assets/icons/link.svg"))];
 
 pub struct Assets;
 

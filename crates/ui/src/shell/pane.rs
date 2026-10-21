@@ -24,6 +24,7 @@ pub enum PaneEvent {
     /// Title, cwd or running state changed; tab titles and the dock refresh.
     Changed,
     SplitRight,
+    SplitDown,
     Close,
     /// The shell exited with code 0; the pane goes away. Other codes keep the pane open
     /// with the restart banner so the error stays readable.
@@ -312,6 +313,15 @@ impl Render for Pane {
                     p,
                 )
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitRight))),
+            )
+            .child(
+                header_button(
+                    "split-down",
+                    IconName::PanelBottom,
+                    "Split down (Ctrl+Shift+E)",
+                    p,
+                )
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitDown))),
             )
             .child(
                 header_button("close", IconName::Close, "Close pane (Ctrl+Shift+W)", p)

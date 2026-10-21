@@ -4,11 +4,11 @@
 //! the terminal palette, and [`apply`] pushes it into gpui-component. [`init`] registers the
 //! runtime-switching actions and installs the default theme.
 
+mod assets;
 mod color;
 mod component;
 mod fonts;
 mod palette;
-mod assets;
 pub mod settings;
 pub mod shell;
 mod terminal;
