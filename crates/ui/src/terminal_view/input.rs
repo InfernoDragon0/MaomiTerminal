@@ -1,7 +1,11 @@
 //! Keyboard, paste, mouse-report and link encoding (xterm conventions). Pure functions.
 
+use std::path::{Path, PathBuf};
+
 use gpui_kit::Keystroke;
 use maomi_term::{CellFlags, GridSnapshot, TermMode};
+
+use super::paths;
 
 /// Bytes for a key press, or None when the key is not for the shell (app shortcuts,
 /// lone modifiers, Ctrl+Shift+letter bindings).
@@ -216,7 +220,14 @@ pub(crate) struct Link {
     pub row: usize,
     pub start: usize,
     pub end: usize,
-    pub url: String,
+    pub target: LinkTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LinkTarget {
+    Url(String),
+    /// Resolved against the cwd; it may not exist.
+    Path(PathBuf),
 }
 
 const SCHEMES: [&str; 5] = ["https://", "http://", "file://", "mailto:", "ftp://"];
@@ -241,11 +252,42 @@ pub(crate) fn link_at(snapshot: &GridSnapshot, row: usize, col: usize) -> Option
             row,
             start,
             end,
-            url: link.uri().to_owned(),
+            target: LinkTarget::Url(link.uri().to_owned()),
         });
     }
-    // One char per column; the right half of a wide char becomes a space so columns line up.
-    let text: Vec<char> = cells
+    let text = row_text(cells);
+    find_urls(&text)
+        .into_iter()
+        .find(|(s, e)| (*s..*e).contains(&col))
+        .map(|(start, end)| Link {
+            row,
+            start,
+            end,
+            target: LinkTarget::Url(text[start..end].iter().collect()),
+        })
+}
+
+/// The file path token under cell (`row`, `col`), resolved against `cwd`; whether it exists
+/// is not checked. `row` indexes [`GridSnapshot::rows`].
+pub(crate) fn path_at(
+    snapshot: &GridSnapshot,
+    row: usize,
+    col: usize,
+    cwd: Option<&Path>,
+) -> Option<Link> {
+    let text = row_text(snapshot.row(row));
+    let (start, end, raw) = paths::path_at(&text, col)?;
+    Some(Link {
+        row,
+        start,
+        end,
+        target: LinkTarget::Path(paths::resolve(&raw, cwd)?),
+    })
+}
+
+/// One char per column; the right half of a wide char becomes a space so columns line up.
+fn row_text(cells: &[maomi_term::SnapshotCell]) -> Vec<char> {
+    cells
         .iter()
         .map(|c| {
             if c.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
@@ -254,16 +296,7 @@ pub(crate) fn link_at(snapshot: &GridSnapshot, row: usize, col: usize) -> Option
                 c.c
             }
         })
-        .collect();
-    find_urls(&text)
-        .into_iter()
-        .find(|(s, e)| (*s..*e).contains(&col))
-        .map(|(start, end)| Link {
-            row,
-            start,
-            end,
-            url: text[start..end].iter().collect(),
-        })
+        .collect()
 }
 
 /// Column ranges of URLs in `text`.

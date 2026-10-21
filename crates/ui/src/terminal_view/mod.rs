@@ -4,6 +4,7 @@ mod builtin;
 mod element;
 mod input;
 mod layout;
+mod paths;
 mod smooth;
 mod win32_input;
 
@@ -62,6 +63,8 @@ pub enum TerminalViewEvent {
     Exited(Option<u32>),
     /// A fresh shell replaced the exited one (Enter on the exit banner).
     Restarted,
+    /// A folder path in the output was Ctrl+clicked.
+    OpenFolder(PathBuf),
 }
 
 pub struct TerminalView {
@@ -424,6 +427,7 @@ impl Render for TerminalView {
                 self.cursor_on,
                 self.smooth_scroll,
                 self.pane.clone(),
+                cx.entity().downgrade(),
             ))
             .children(banner)
     }

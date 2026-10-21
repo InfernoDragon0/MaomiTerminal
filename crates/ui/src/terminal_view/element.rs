@@ -2,26 +2,29 @@
 //! scrolling, mouse reports and link clicks.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::{
     App, BorderStyle, Bounds, CursorStyle as MouseCursor, DispatchPhase, Element, ElementId,
     FontStyle, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
     IntoElement, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, SharedString, Size, StrikethroughStyle,
-    Style, TextAlign, TextRun, UnderlineStyle, Window, fill, font, outline, point, px, relative,
-    size,
+    Style, TextAlign, TextRun, UnderlineStyle, WeakEntity, Window, fill, font, outline, point, px,
+    relative, size,
 };
 use maomi_term::alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use maomi_term::alacritty_terminal::selection::{Selection, SelectionType};
 use maomi_term::{CellFlags, CursorShape, GridSnapshot, PtySession, TermMode, TermSize};
 
 use super::builtin;
-use super::input::{self, Link, ReportButton, ReportKind};
+use super::input::{self, Link, LinkTarget, ReportButton, ReportKind};
 use super::layout::{self, TextStyle, UnderlineKind};
 use super::smooth::SmoothScroll;
+use super::{TerminalView, TerminalViewEvent};
 use crate::color::Color;
 use crate::terminal::TerminalColors;
 
@@ -65,6 +68,38 @@ pub(crate) struct PaneState {
     last_report_cell: Option<(usize, usize)>,
     /// Link under the pointer while Ctrl (Cmd on macOS) is held.
     hovered_link: Option<Link>,
+    /// Path under the pointer whose existence check is still running.
+    awaiting_link: Option<Link>,
+    paths: PathProbes,
+}
+
+/// Recent existence checks of hovered paths: `Some(is_dir)` when the path exists.
+#[derive(Debug, Default)]
+struct PathProbes {
+    known: HashMap<PathBuf, (Option<bool>, Instant)>,
+    running: HashSet<PathBuf>,
+}
+
+impl PathProbes {
+    /// Long enough for a sweep over one screen, short enough to see a file a build just wrote.
+    const FRESH: Duration = Duration::from_secs(5);
+    const MAX: usize = 512;
+
+    /// None while unknown or stale; `Some(None)` when the path does not exist.
+    fn get(&self, path: &Path) -> Option<Option<bool>> {
+        self.known
+            .get(path)
+            .filter(|(_, at)| at.elapsed() < Self::FRESH)
+            .map(|(kind, _)| *kind)
+    }
+
+    fn insert(&mut self, path: PathBuf, kind: Option<bool>) {
+        if self.known.len() >= Self::MAX {
+            self.known.clear();
+        }
+        self.running.remove(&path);
+        self.known.insert(path, (kind, Instant::now()));
+    }
 }
 
 /// Paints `session`'s grid, resizing the PTY to fit.
@@ -77,9 +112,12 @@ pub struct TerminalElement {
     cursor_on: bool,
     smooth_scroll: bool,
     state: Rc<RefCell<PaneState>>,
+    /// Receives `OpenFolder` when a folder path is Ctrl+clicked.
+    view: WeakEntity<TerminalView>,
 }
 
 impl TerminalElement {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         session: Arc<PtySession>,
         colors: TerminalColors,
@@ -88,6 +126,7 @@ impl TerminalElement {
         cursor_on: bool,
         smooth_scroll: bool,
         state: Rc<RefCell<PaneState>>,
+        view: WeakEntity<TerminalView>,
     ) -> Self {
         Self {
             session,
@@ -97,6 +136,7 @@ impl TerminalElement {
             cursor_on,
             smooth_scroll,
             state,
+            view,
         }
     }
 }
@@ -522,17 +562,41 @@ impl TerminalElement {
                 self.state.clone(),
             );
             let snapshot = layout.snapshot.clone();
+            let view = self.view.clone();
             window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || !hitbox.is_hovered(window) {
                     return;
                 }
                 let (col, row, side) = geometry.cell_at(event.position);
-                if event.button == MouseButton::Left
-                    && link_modifier(&event.modifiers)
-                    && let Some(link) = input::link_at(&snapshot, snapshot.rows_above + row, col)
-                {
-                    cx.open_url(&link.url);
-                    return;
+                if event.button == MouseButton::Left && link_modifier(&event.modifiers) {
+                    let row = snapshot.rows_above + row;
+                    if let Some(link) = input::link_at(&snapshot, row, col)
+                        && let LinkTarget::Url(url) = link.target
+                    {
+                        cx.open_url(&url);
+                        return;
+                    }
+                    if let Some(link) =
+                        input::path_at(&snapshot, row, col, session.cwd().as_deref())
+                        && let LinkTarget::Path(path) = link.target
+                    {
+                        let known = state.borrow().paths.get(&path);
+                        match known {
+                            Some(Some(is_dir)) => open_path(path, is_dir, &view, cx),
+                            Some(None) => {}
+                            None => {
+                                let view = view.clone();
+                                probe(path, &state, window, cx, move |_, path, kind, _, cx| {
+                                    if let Some(is_dir) = kind {
+                                        open_path(path, is_dir, &view, cx);
+                                    }
+                                });
+                            }
+                        }
+                        if known != Some(None) {
+                            return;
+                        }
+                    }
                 }
                 let mut state = state.borrow_mut();
                 if reporting(&event.modifiers) {
@@ -583,12 +647,13 @@ impl TerminalElement {
                 self.state.clone(),
             );
             let snapshot = layout.snapshot.clone();
-            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _cx| {
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
                 let (col, row, side) = geometry.cell_at(event.position);
-                let mut state = state.borrow_mut();
+                let state_ref = &state;
+                let mut state = state_ref.borrow_mut();
                 if state.selecting && event.pressed_button == Some(MouseButton::Left) {
                     let point = grid_point(col, row);
                     session.with_term(|term| {
@@ -623,16 +688,58 @@ impl TerminalElement {
                     state.last_report_cell = Some((col, row));
                 }
 
+                let mut awaiting = None;
                 let link = (hitbox.is_hovered(window) && link_modifier(&event.modifiers))
-                    .then(|| input::link_at(&snapshot, snapshot.rows_above + row, col))
+                    .then(|| {
+                        let abs = snapshot.rows_above + row;
+                        input::link_at(&snapshot, abs, col).or_else(|| {
+                            let link =
+                                input::path_at(&snapshot, abs, col, session.cwd().as_deref())?;
+                            let LinkTarget::Path(path) = &link.target else {
+                                return None;
+                            };
+                            match state.paths.get(path) {
+                                Some(kind) => kind.map(|_| link),
+                                None => {
+                                    awaiting = Some(link);
+                                    None
+                                }
+                            }
+                        })
+                    })
                     .flatten()
                     .map(|link| Link {
                         row: link.row - snapshot.rows_above,
                         ..link
                     });
+                let awaiting = awaiting.map(|link| Link {
+                    row: link.row - snapshot.rows_above,
+                    ..link
+                });
+                state.awaiting_link = awaiting.clone();
                 if link != state.hovered_link {
                     state.hovered_link = link;
                     window.refresh();
+                }
+                drop(state);
+                if let Some(link) = awaiting
+                    && let LinkTarget::Path(path) = &link.target
+                    && !state_ref.borrow().paths.running.contains(path)
+                {
+                    let path = path.clone();
+                    probe(
+                        path,
+                        state_ref,
+                        window,
+                        cx,
+                        move |state, _, kind, window, _| {
+                            // Underline it if the pointer is still on it.
+                            if kind.is_some() && state.awaiting_link.as_ref() == Some(&link) {
+                                state.hovered_link = state.awaiting_link.take();
+                                window.refresh();
+                            }
+                        },
+                    );
                 }
             });
         }
@@ -669,6 +776,41 @@ impl TerminalElement {
                 }
             });
         }
+    }
+}
+
+/// Checks whether `path` exists on a background thread (a network path can take seconds),
+/// records it and calls `then` with `Some(is_dir)`, or None when it does not exist.
+fn probe(
+    path: PathBuf,
+    state: &Rc<RefCell<PaneState>>,
+    window: &Window,
+    cx: &mut App,
+    then: impl FnOnce(&mut PaneState, PathBuf, Option<bool>, &mut Window, &mut App) + 'static,
+) {
+    state.borrow_mut().paths.running.insert(path.clone());
+    let (state, handle) = (state.clone(), window.window_handle());
+    let check = path.clone();
+    let task = cx
+        .background_executor()
+        .spawn(async move { std::fs::metadata(&check).ok().map(|m| m.is_dir()) });
+    cx.spawn(async move |cx| {
+        let kind = task.await;
+        _ = handle.update(cx, |_, window, cx| {
+            let mut state = state.borrow_mut();
+            state.paths.insert(path.clone(), kind);
+            then(&mut state, path, kind, window, cx);
+        });
+    })
+    .detach();
+}
+
+/// A file opens in its default app; a folder goes to the pane, which shows it in the drawer.
+fn open_path(path: PathBuf, is_dir: bool, view: &WeakEntity<TerminalView>, cx: &mut App) {
+    if is_dir {
+        _ = view.update(cx, |_, cx| cx.emit(TerminalViewEvent::OpenFolder(path)));
+    } else {
+        cx.open_with_system(&path);
     }
 }
 

@@ -83,9 +83,16 @@ impl Pane {
         let cwd = session.cwd();
         let shell_kind = session.shell().kind;
         let terminal = cx.new(|cx| TerminalView::with_session(session, options, window, cx));
-        let subscription = cx.subscribe(&terminal, |pane, _, event: &TerminalViewEvent, cx| {
-            pane.on_terminal_event(event, cx)
-        });
+        let subscription = cx.subscribe_in(
+            &terminal,
+            window,
+            |pane, _, event: &TerminalViewEvent, window, cx| match event {
+                TerminalViewEvent::OpenFolder(path) => {
+                    pane.show_in_drawer(path.clone(), window, cx)
+                }
+                event => pane.on_terminal_event(event, cx),
+            },
+        );
         Self {
             terminal,
             shell_name,
@@ -131,6 +138,17 @@ impl Pane {
     pub fn toggle_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_drawer(window, cx);
         self.drawer_open = !self.drawer_open;
+        cx.notify();
+    }
+
+    /// Opens the drawer on `dir`, e.g. a folder Ctrl+clicked in the output. The drawer goes
+    /// back to the shell's cwd the next time that changes.
+    fn show_in_drawer(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_drawer(window, cx);
+        self.drawer_open = true;
+        if let Some((drawer, _)) = &self.drawer {
+            drawer.update(cx, |d, cx| d.set_dir(dir, cx));
+        }
         cx.notify();
     }
 
@@ -266,7 +284,7 @@ impl Pane {
                     drawer.update(cx, |d, cx| d.set_follow_blocked(running, cx));
                 }
             }
-            TerminalViewEvent::Bell => return,
+            TerminalViewEvent::Bell | TerminalViewEvent::OpenFolder(_) => return,
             TerminalViewEvent::Restarted => {
                 self.exited = false;
                 self.prompt = PromptState::Unknown;
