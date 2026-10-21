@@ -1,8 +1,8 @@
 name: Release
 
-# Push a tag `vX.Y.Z` matching the workspace version in Cargo.toml. Each OS builds and packs its
-# Velopack channel (win / osx / linux) in parallel; one job then uploads all three to a single
-# GitHub release, which is also the feed the in-app updater reads.
+# Push a tag `vX.Y.Z` matching the workspace version in Cargo.toml. Each OS builds, packs its
+# Velopack channel (win / osx / linux) and uploads it straight to one GitHub release, which is also
+# the feed the in-app updater reads. No workflow artifacts, so nothing counts against Actions storage.
 # Actions are pinned to full commit SHAs like ci.yml; the trailing comment names the tag.
 
 on:
@@ -21,10 +21,11 @@ env:
   REPO_URL: https://github.com/${{ github.repository }}
 
 jobs:
-  pack:
-    name: pack (${{ matrix.channel }})
+  release:
+    name: release (${{ matrix.channel }})
     strategy:
-      fail-fast: true
+      # One failed OS should not stop the others from shipping their channel.
+      fail-fast: false
       matrix:
         include:
           # vpk assumes x86 on Windows unless --runtime says otherwise.
@@ -34,6 +35,8 @@ jobs:
           # Universal binary: no single architecture to name.
           - { os: macos-latest, channel: osx, exe: maomiterminal, runtime: "" }
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,6 +51,15 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # Before the build: once the first OS uploads, "latest release" is the new one, and the
+      # delta must be built against the previous version.
+      - name: Previous release (delta base)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dotnet tool install -g vpk --version "$VPK_VERSION"
+          vpk download github --repoUrl "$REPO_URL" --token "$GITHUB_TOKEN" -o Releases || true
       - name: "Linux system libraries (GPUI: X11, Wayland, Vulkan, fonts)"
         if: runner.os == 'Linux'
         run: |
@@ -90,12 +102,7 @@ jobs:
 
       - name: Pack
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          dotnet tool install -g vpk --version "$VPK_VERSION"
-          # The previous release, so vpk can build a delta package against it.
-          vpk download github --repoUrl "$REPO_URL" --token "$GITHUB_TOKEN" -o Releases || true
           extra=()
           if [ -n "${{ matrix.runtime }}" ]; then
             extra+=(--runtime "${{ matrix.runtime }}")
@@ -106,31 +113,20 @@ jobs:
           vpk pack -u "$PACK_ID" -v "${{ steps.version.outputs.version }}" -p publish \
             --mainExe "${{ matrix.exe }}" --packTitle MaomiTerminal --packAuthors maomi \
             -o Releases "${extra[@]}"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: releases-${{ matrix.channel }}
-          path: Releases/
-          if-no-files-found: error
 
-  publish:
-    needs: pack
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: releases-*
-          path: artifacts
-      # One channel at a time: the first upload creates the release, the others merge into it.
+      # The first OS to finish creates the release and the others merge into it. Retried in case
+      # two jobs try to create it at the same moment.
       - name: Upload to GitHub Releases
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          dotnet tool install -g vpk --version "$VPK_VERSION"
-          for channel in win linux osx; do
-            vpk upload github -o "artifacts/releases-$channel" --channel "$channel" \
+          for attempt in 1 2 3; do
+            vpk upload github -o Releases --channel "${{ matrix.channel }}" \
               --repoUrl "$REPO_URL" --token "$GITHUB_TOKEN" \
               --tag "$GITHUB_REF_NAME" --releaseName "MaomiTerminal $GITHUB_REF_NAME" \
-              --publish --merge
+              --publish --merge && exit 0
+            echo "upload attempt $attempt failed, retrying"
+            sleep $((attempt * 30))
           done
+          exit 1
