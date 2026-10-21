@@ -51,8 +51,10 @@ debug = "line-tables-only"
 # GPUI is slow unoptimised; keep deps fast.
 [profile.dev.package."*"]
 opt-level = 2
-# Full debug info for every dependency overflows the MSVC PDB limit (LNK1318); keep line tables.
-debug = "line-tables-only"
+# No debug info for dependencies: target/ is about a GB smaller and full debug info overflows the
+# MSVC PDB limit (LNK1318) anyway. Our crates keep line tables (above), so panics and logs in
+# them still show file:line; only frames inside dependencies lose it.
+debug = false
 
 [profile.release]
 lto = "thin"
