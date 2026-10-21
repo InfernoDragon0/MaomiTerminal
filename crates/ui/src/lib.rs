@@ -8,6 +8,7 @@ mod color;
 mod component;
 mod fonts;
 mod palette;
+mod assets;
 pub mod settings;
 pub mod shell;
 mod terminal;
@@ -16,6 +17,7 @@ pub mod updates;
 
 use gpui_kit::{App, Global, KeyBinding};
 
+pub use assets::Assets;
 pub use color::Color;
 pub use component::apply;
 pub use fonts::TERMINAL_FAMILY;
