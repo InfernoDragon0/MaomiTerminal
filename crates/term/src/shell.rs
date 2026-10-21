@@ -190,7 +190,8 @@ mod tests {
     #[test]
     fn kind_from_program_name() {
         assert_eq!(
-            ShellKind::from_program(Path::new(r"C:\x\pwsh.exe")),
+            // join() uses the host separator; a literal `C:\x\...` is one file name on Unix.
+            ShellKind::from_program(&Path::new("x").join("pwsh.exe")),
             ShellKind::Pwsh
         );
         assert_eq!(
