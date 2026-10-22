@@ -17,12 +17,15 @@ use gpui_kit::{
 use maomi_config::{PaneLayout, TabLayout, WindowLayout};
 use maomi_term::{PtySession, SessionOptions};
 
+use super::hosts::{self, HostsEvent, HostsPanel};
 use super::pane::{Pane, PaneEvent, display_path};
 use super::settings_page::SettingsPage;
+use super::snippets::{self, SnippetsEvent, SnippetsPanel, TabChoice};
+use super::ssh;
 use super::tree::{Direction, DropZone, PaneTree};
 use super::{LaunchOptions, actions::*};
 use crate::updates::{self, UpdateState};
-use crate::{Mode, Palette, Skin, Theme, set_theme, settings};
+use crate::{Mode, Palette, Skin, TerminalViewEvent, Theme, set_theme, settings};
 
 struct Tab {
     id: u64,
@@ -30,10 +33,23 @@ struct Tab {
     focused: Entity<Pane>,
 }
 
+/// What the left dock shows; each has a rail button.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dock {
+    Sessions,
+    Hosts,
+    Snippets,
+}
+
 pub struct Workspace {
     tabs: Vec<Tab>,
     active: usize,
     dock_open: bool,
+    dock: Dock,
+    /// Created the first time the Snippets dock opens.
+    snippets_panel: Option<Entity<SnippetsPanel>>,
+    /// Created the first time the Hosts dock opens.
+    hosts_panel: Option<Entity<HostsPanel>>,
     launch: LaunchOptions,
     next_id: u64,
     /// The user confirmed closing the window although commands were running.
@@ -51,6 +67,9 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             dock_open: true,
+            dock: Dock::Sessions,
+            snippets_panel: None,
+            hosts_panel: None,
             launch,
             next_id: 0,
             close_confirmed: false,
@@ -225,6 +244,42 @@ impl Workspace {
         if let Some(cmd) = &self.launch.run {
             session.write(format!("{cmd}\r"));
         }
+        Some(self.add_pane(session, options, window, cx))
+    }
+
+    /// A pane for the saved host `host_id`; it shows "Connecting…" until the session opens.
+    fn spawn_ssh_pane(
+        &mut self,
+        host_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<Pane>> {
+        let host = hosts::host(host_id, cx)?;
+        let options = settings::session_options(&settings::config(cx));
+        let session = ssh::placeholder(&host, options.clone())?;
+        let pane = self.add_pane(session, options, window, cx);
+        let terminal = pane.read(cx).terminal().clone();
+        // The Hosts dot goes back to idle when a connected session ends.
+        let id = host.id.clone();
+        cx.subscribe(&terminal, move |_, _, event: &TerminalViewEvent, cx| {
+            if matches!(event, TerminalViewEvent::Exited(_)) {
+                hosts::clear_status(&id, cx);
+            }
+        })
+        .detach();
+        ssh::connect(host.id, terminal.downgrade(), window, cx);
+        Some(pane)
+    }
+
+    /// Wraps a started session in a pane and subscribes to it.
+    fn add_pane(
+        &mut self,
+        session: PtySession,
+        options: SessionOptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Pane> {
+        let config = settings::config(cx);
         let pane = cx.new(|cx| Pane::new(session, options, window, cx));
         let smooth = self.launch.smooth_scroll;
         pane.read(cx).terminal().clone().update(cx, |view, cx| {
@@ -242,7 +297,38 @@ impl Workspace {
         });
         self.pane_subscriptions
             .insert(pane.entity_id(), [events, focus]);
-        Some(pane)
+        pane
+    }
+
+    /// Opens `pane` as a new tab, or beside the focused pane.
+    fn place_pane(
+        &mut self,
+        pane: Entity<Pane>,
+        in_split: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self.focused_pane().filter(|_| in_split);
+        match target.and_then(|t| self.tab_of(&t).map(|tab| (t, tab))) {
+            Some((target, tab)) => {
+                let mut next_id = self.next_id;
+                self.tabs[tab]
+                    .tree
+                    .split(&target, Axis::Horizontal, pane.clone(), &mut next_id);
+                self.next_id = next_id;
+            }
+            None => {
+                self.next_id += 1;
+                self.tabs.push(Tab {
+                    id: self.next_id,
+                    tree: PaneTree::Leaf(pane.clone()),
+                    focused: pane.clone(),
+                });
+                self.active = self.tabs.len() - 1;
+            }
+        }
+        self.focus_pane(&pane, window, cx);
+        cx.notify();
     }
 
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -376,6 +462,94 @@ impl Workspace {
         // Keys go to the page, not the hidden terminal.
         page.focus_handle(cx).focus(window, cx);
         cx.notify();
+    }
+
+    /// A rail button: leaves Settings and shows `dock`; clicking the shown dock's button again
+    /// collapses it.
+    fn show_dock(&mut self, dock: Dock, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_settings {
+            self.toggle_settings(window, cx);
+            self.dock_open = true;
+        } else if self.dock == dock {
+            self.dock_open = !self.dock_open;
+        } else {
+            self.dock_open = true;
+        }
+        self.dock = dock;
+        if dock == Dock::Snippets && self.snippets_panel.is_none() {
+            let panel = cx.new(|cx| SnippetsPanel::new(window, cx));
+            let events = cx.subscribe_in(&panel, window, |ws, _, event, window, cx| {
+                ws.on_snippets_event(event, window, cx)
+            });
+            self._observers.push(events);
+            self.snippets_panel = Some(panel);
+        }
+        if dock == Dock::Hosts && self.hosts_panel.is_none() {
+            let panel = cx.new(|cx| HostsPanel::new(window, cx));
+            let events = cx.subscribe_in(&panel, window, |ws, _, event, window, cx| {
+                ws.on_hosts_event(event, window, cx)
+            });
+            self._observers.push(events);
+            self.hosts_panel = Some(panel);
+        }
+        cx.notify();
+    }
+
+    fn on_hosts_event(&mut self, event: &HostsEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let (id, in_split) = match event {
+            HostsEvent::Connect(id) => (id, false),
+            HostsEvent::ConnectInSplit(id) => (id, true),
+            HostsEvent::Collapse => {
+                self.dock_open = false;
+                cx.notify();
+                return;
+            }
+        };
+        if let Some(pane) = self.spawn_ssh_pane(id, window, cx) {
+            self.place_pane(pane, in_split, window, cx);
+        }
+    }
+
+    fn on_snippets_event(
+        &mut self,
+        event: &SnippetsEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SnippetsEvent::RunInFocused(command) => {
+                if let Some(pane) = self.focused_pane() {
+                    pane.read(cx).terminal().read(cx).run_command(command);
+                    self.focus_pane(&pane, window, cx);
+                }
+            }
+            SnippetsEvent::RunOnTabs(command) => {
+                let choices = self
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tab)| {
+                        let pane = tab.focused.read(cx);
+                        let mut detail = pane.shell_name().to_owned();
+                        if i == self.active {
+                            detail.push_str(" \u{b7} current tab");
+                        }
+                        TabChoice {
+                            label: pane.title().into(),
+                            detail: detail.into(),
+                            busy: pane.is_busy(cx),
+                            checked: i == self.active,
+                            terminal: pane.terminal().downgrade(),
+                        }
+                    })
+                    .collect();
+                snippets::open_tab_picker(command.clone(), choices, window, cx);
+            }
+            SnippetsEvent::Collapse => {
+                self.dock_open = false;
+                cx.notify();
+            }
+        }
     }
 
     /// Focusing a pane always shows the terminals (tab clicks, new tabs, splits).
@@ -806,7 +980,7 @@ impl Workspace {
     fn render_rail(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let accent = p.accent.to_hsla();
         let rail_button =
-            |id: &'static str, icon: IconName, tooltip: &'static str, on: bool, enabled: bool| {
+            |id: &'static str, icon: Icon, tooltip: &'static str, on: bool, enabled: bool| {
                 let (hover, emph) = (p.surface_2.to_hsla(), p.fg_emph.to_hsla());
                 div()
                     .id(id)
@@ -834,7 +1008,7 @@ impl Workspace {
                                 .bg(accent),
                         )
                     })
-                    .child(Icon::new(icon).size(px(20.)))
+                    .child(icon.size(px(20.)))
             };
         div()
             .flex()
@@ -849,39 +1023,42 @@ impl Workspace {
             .child(
                 rail_button(
                     "rail-terminals",
-                    IconName::SquareTerminal,
+                    Icon::new(IconName::SquareTerminal),
                     "Terminals",
-                    !self.show_settings,
+                    !self.show_settings && self.dock == Dock::Sessions,
                     true,
                 )
-                .on_click(cx.listener(|ws, _, window, cx| {
-                    if ws.show_settings {
-                        ws.toggle_settings(window, cx);
-                    } else {
-                        ws.dock_open = !ws.dock_open;
-                        cx.notify();
-                    }
-                })),
+                .on_click(
+                    cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Sessions, window, cx)),
+                ),
             )
-            .child(rail_button(
-                "rail-hosts",
-                IconName::HardDrive,
-                "Hosts (v2)",
-                false,
-                false,
-            ))
-            .child(rail_button(
-                "rail-snippets",
-                IconName::FileText,
-                "Snippets (v2)",
-                false,
-                false,
-            ))
+            .child(
+                rail_button(
+                    "rail-hosts",
+                    Icon::new(IconName::HardDrive),
+                    "Hosts",
+                    !self.show_settings && self.dock == Dock::Hosts,
+                    true,
+                )
+                .on_click(cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Hosts, window, cx))),
+            )
+            .child(
+                rail_button(
+                    "rail-snippets",
+                    Icon::new(gpui_kit::assets::IconName::SquareCode),
+                    "Snippets",
+                    !self.show_settings && self.dock == Dock::Snippets,
+                    true,
+                )
+                .on_click(
+                    cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Snippets, window, cx)),
+                ),
+            )
             .child(div().flex_1())
             .child(
                 rail_button(
                     "rail-settings",
-                    IconName::Settings,
+                    Icon::new(IconName::Settings),
                     if cfg!(target_os = "macos") {
                         "Settings (Cmd+,)"
                     } else {
@@ -1005,25 +1182,6 @@ impl Workspace {
                             .children(rows),
                     ),
             )
-            .child(
-                div()
-                    .opacity(0.55)
-                    .child(div().px(px(4.)).child(section_title("HOSTS (V2)")))
-                    .child(
-                        div()
-                            .mx(px(4.))
-                            .mt(px(6.))
-                            .px(px(8.))
-                            .py(px(6.))
-                            .text_size(px(11.5))
-                            .text_color(p.muted.to_hsla())
-                            .border_1()
-                            .border_dashed()
-                            .border_color(p.line_strong.to_hsla())
-                            .rounded(px(9.))
-                            .child("SSH hosts arrive in v2"),
-                    ),
-            )
     }
 
     fn render_status_bar(
@@ -1135,7 +1293,13 @@ impl Render for Workspace {
                             d.child(div().flex_1().min_w_0().min_h_0().child(page.clone()))
                         }
                         _ => d
-                            .when(self.dock_open, |d| d.child(self.render_dock(p, cx)))
+                            .when(self.dock_open, |d| {
+                                match (self.dock, &self.snippets_panel, &self.hosts_panel) {
+                                    (Dock::Snippets, Some(panel), _) => d.child(panel.clone()),
+                                    (Dock::Hosts, _, Some(panel)) => d.child(panel.clone()),
+                                    _ => d.child(self.render_dock(p, cx)),
+                                }
+                            })
                             .child(
                                 div()
                                     .flex_1()

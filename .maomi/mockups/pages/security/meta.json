@@ -1,0 +1,23 @@
+{
+  "id": "security",
+  "title": "Vault unlock + Settings > Security",
+  "status": "review",
+  "version": 1,
+  "versions": [
+    {
+      "v": 1,
+      "at": 1792572145525,
+      "bytes": 29422
+    }
+  ],
+  "createdAt": 1792572145525,
+  "updatedAt": 1792572221075,
+  "plans": [
+    {
+      "plan": "p-mvg50cth6ccf",
+      "milestone": "m-mvhu8bgcl08j"
+    }
+  ],
+  "plan": "p-mvg50cth6ccf",
+  "milestone": "m-mvhu8bgcl08j"
+}

@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en" data-theme="aurora-dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSH keys settings</title>
+<link rel="stylesheet" href="../../_system/tokens.css">
+<link rel="stylesheet" href="../../_system/components.css">
+<style>
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+button { font: inherit; }
+.app { display: grid; grid-template-rows: 38px minmax(0, 1fr) 24px; height: 100vh; min-height: 520px; }
+.titlebar { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 0 0 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.brand { flex: none; display: flex; align-items: center; gap: 7px; margin-right: 8px; font-size: 12px; font-weight: 600; color: var(--fg-emph); letter-spacing: .2px; }
+.brand i { width: 10px; height: 10px; border-radius: 3px; background: var(--aurora); }
+.tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+.tb-btn { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; color: var(--muted); background: none; border: 0; border-radius: 8px; cursor: pointer; }
+.tb-btn:hover { color: var(--fg-emph); background: var(--surface-2); }
+.tb-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.tb-spacer { flex: 1; min-width: 8px; align-self: stretch; }
+.tb-tools { display: flex; align-items: center; gap: 6px; flex: none; margin-right: 6px; }
+.tb-btn:disabled { opacity: .4; cursor: default; }
+.tb-btn:disabled:hover { color: var(--muted); background: none; }
+#seg-mode[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+.mode-btn .ic-sun { display: none; }
+:root[data-theme$="-light"] .mode-btn .ic-moon { display: none; }
+:root[data-theme$="-light"] .mode-btn .ic-sun { display: block; }
+.win-ctl { display: flex; flex: none; align-self: stretch; }
+.win-ctl button { display: grid; place-items: center; width: 42px; padding: 0; color: var(--muted); background: none; border: 0; cursor: pointer; }
+.win-ctl button:hover { color: var(--fg-emph); background: var(--surface-2); }
+.win-ctl svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.body { display: flex; min-height: 0; }
+.dock { display: flex; flex-direction: column; gap: 14px; flex: none; width: 240px; padding: 12px 10px; overflow: hidden; background: var(--bg); border-right: 1px solid var(--line); }
+.dock-head { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); }
+.dock-head .tb-btn { width: 24px; height: 24px; }
+.sess-list { display: grid; gap: 2px; margin-top: 6px; }
+.sess { display: flex; align-items: center; gap: 9px; padding: 6px 8px; font-size: 12.5px; color: var(--fg); border-radius: 9px; cursor: pointer; }
+.sess:hover { background: var(--surface-2); }
+.sess .st { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--muted); }
+.sess .st.ok { background: var(--ok); }
+.sess .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess .sub { font-size: 11px; color: var(--muted); }
+.dock-v2 { opacity: .55; }
+.dock-v2 .note { margin: 6px 4px 0; font-size: 11.5px; color: var(--muted); }
+.dock-v2 .ghost { display: flex; align-items: center; gap: 8px; margin: 6px 4px 0; padding: 6px 8px; font-size: 12px; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 9px; }
+.centre { flex: 1; min-width: 0; min-height: 0; padding: 6px; background: var(--bg); }
+.splits { display: grid; grid-template-columns: minmax(0, 1fr) 4px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 4px minmax(0, 1fr); height: 100%; background: var(--surface-2); border-radius: 10px; }
+.splits > .term-pane { border-radius: 8px; }
+.gutter { background: var(--surface-2); transition: background .12s; }
+.gutter:hover { background: color-mix(in srgb, var(--accent) 55%, var(--surface-2)); }
+.gutter.v { grid-column: 2; grid-row: 1 / 4; cursor: col-resize; }
+.gutter.h { grid-column: 1 / 4; grid-row: 2; cursor: row-resize; }
+.p1 { grid-column: 1; grid-row: 1; } .p2 { grid-column: 3; grid-row: 1; } .p3 { grid-column: 1; grid-row: 3; } .p4 { grid-column: 3; grid-row: 3; }
+.statusbar { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-size: 11.5px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--line); }
+.statusbar .r { display: flex; gap: 14px; }
+.statusbar b { font-weight: 500; color: var(--fg); }
+.titlebar { position: relative; z-index: 30; }
+.set-body { flex: 1; display: flex; min-width: 0; min-height: 0; }
+.snav { flex: none; width: 200px; padding: 18px 12px; background: var(--bg); border-right: 1px solid var(--line); }
+.snav h2 { margin: 0 8px 10px; font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); }
+.snav a { display: block; padding: 7px 10px; margin-bottom: 2px; font-size: 13px; color: var(--fg); text-decoration: none; border-radius: 9px; cursor: pointer; }
+.snav a:hover { background: var(--surface-2); }
+.scontent { flex: 1; min-width: 0; padding: 22px 28px 40px; overflow-y: auto; background: var(--bg); }
+.scol { max-width: 760px; margin: 0 auto; display: grid; gap: 14px; }
+.scol h1 { margin: 0 0 4px; font-size: 20px; color: var(--fg-emph); }
+.scol .lead { margin: 0 0 6px; color: var(--muted); }
+.scol section { scroll-margin-top: 12px; display: grid; gap: 10px; }
+.scol .sect-title { margin-top: 10px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); }
+.row:first-of-type { border-top: 0; padding-top: 4px; }
+.row .lab { min-width: 0; }
+.row .lab b { display: block; font-weight: 600; color: var(--fg-emph); }
+.row .lab span { color: var(--muted); font-size: 12px; }
+.row .ctl { flex: none; display: flex; align-items: center; gap: 8px; }
+.titlebar { position: relative; z-index: 30; }
+.snav a.sel { color: var(--fg-emph); }
+.lab .hint { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); }
+.unit { font-size: 12px; color: var(--muted); }
+.scrim { position: fixed; inset: 0; z-index: 20; display: none; place-items: center; padding: 16px; background: color-mix(in srgb, var(--bg) 72%, transparent); }
+.dialog { width: 420px; max-width: 100%; display: grid; gap: 14px; padding: 18px 20px; }
+.dialog h2 { margin: 0; font-size: 16px; color: var(--fg-emph); }
+.dialog .sub { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+.dialog label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.dialog label b { font-weight: 600; color: var(--fg-emph); }
+.dialog .field { width: 100%; height: 34px; }
+.pw { position: relative; }
+.pw .field { padding-right: 38px; }
+.pw .tb-btn { position: absolute; top: 3px; right: 3px; }
+.bad { border-color: var(--err); }
+.errline { display: none; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--err); }
+.errline svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.dialog .foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.dialog .foot .grow { flex: 1; }
+
+.app[data-modal="generate"] #dlg-generate, .app[data-modal="import"] #dlg-import, .app[data-modal="hostkey-new"] #dlg-hostkey-new, .app[data-modal="hostkey-changed"] #dlg-hostkey-changed, .app[data-modal="password"] #dlg-password { display: grid; }
+.mono { font-family: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace; }
+.key { display: grid; gap: 6px; padding: 12px 0; border-top: 1px solid var(--line); }
+.key:first-of-type { border-top: 0; padding-top: 4px; }
+.key .top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.key .nm { font-weight: 600; color: var(--fg-emph); }
+.key .used { margin-left: auto; font-size: 12px; color: var(--muted); }
+.fp { overflow-wrap: anywhere; font-size: 11.5px; color: var(--muted); }
+.key .acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.card-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.card-tools .d { font-size: 12px; color: var(--muted); }
+.card-tools .btns { display: flex; gap: 8px; }
+.kh { display: grid; grid-template-columns: minmax(0, 1.1fr) 90px minmax(0, 2fr) auto; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); }
+.kh.hd { padding: 6px 0; border-top: 0; font-size: 11.5px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; color: var(--muted); }
+.kh .fp { font-size: 11.5px; }
+.kh .h { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-emph); font-size: 12px; }
+.dialog .seg { display: flex; }
+.dialog .seg button { flex: 1; }
+.dialog textarea.field { height: auto; padding: 8px 10px; resize: vertical; line-height: 1.4; font-size: 12px; }
+.dialog .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.dialog .check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--fg); }
+.dialog .check input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.fp-box { padding: 8px 10px; font-size: 12px; line-height: 1.4; color: var(--fg-emph); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.fp-box small { display: block; margin-bottom: 2px; font-family: "Segoe UI", system-ui, sans-serif; font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); }
+.fp-box.old { color: var(--muted); }
+.kv { display: grid; grid-template-columns: 80px 1fr; gap: 4px 10px; font-size: 12.5px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; color: var(--fg-emph); }
+.dialog .bad { border-color: var(--err); }
+.dialog .errline { display: flex; }
+.dialog .file-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="app" data-modal="none">
+<header class="titlebar">
+  <div class="brand"><i></i>MaomiTerminal</div>
+  <div class="tabs"><button class="term-tab on" title="pwsh ~/GitProjects"><span class="lbl">pwsh ~/GitProjects</span><span class="x" title="Close tab">&times;</span></button><button class="term-tab" title="zsh ~ (ssh: fennec)"><span class="lbl">zsh ~ (ssh: fennec)</span><span class="x" title="Close tab">&times;</span></button><button class="term-tab" title="cmd C:\"><span class="lbl">cmd C:\</span><span class="x" title="Close tab">&times;</span></button></div>
+  <button class="tb-btn" title="New tab (Ctrl+Shift+T)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button class="tb-btn" title="All tabs"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+  <div class="tb-spacer"></div>
+  <div class="tb-tools">
+    <div class="seg" id="seg-state" role="group" aria-label="Mockup state" title="Mockup state"><button data-state="keys" class="on">Keys</button><button data-state="generate">Generate</button><button data-state="import">Import</button><button data-state="hostkey-new">New host key</button><button data-state="hostkey-changed">Host key changed</button><button data-state="password">Password</button></div>
+    <div class="seg" role="group" aria-label="Skin" title="Skin (Ctrl+Shift+K)"><button data-skin="aurora" class="on">Aurora</button><button data-skin="onyx">Onyx</button><button data-skin="mochi">Mochi</button></div>
+    <button class="tb-btn mode-btn" id="mode-btn" title="Toggle dark / light (Ctrl+Shift+L)" aria-label="Toggle dark or light mode"><span class="ic-moon" style="display:contents"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></span><span class="ic-sun" style="display:contents"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span></button>
+  </div>
+  <div class="win-ctl"><button title="Minimise"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button><button title="Maximise"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></button><button title="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+</header>
+<div class="body">
+<nav class="activity-rail" aria-label="Activity">
+  <button class="rail-btn" title="Terminals" aria-label="Terminals"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z"/><path d="M8 10l3 2-3 2M13 14h3"/></svg></button>
+  <button class="rail-btn" title="Hosts" aria-label="Hosts"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg></button>
+  <button class="rail-btn" title="Snippets" aria-label="Snippets"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6L3 12l5 6M16 6l5 6-5 6M13.5 5l-3 14"/></svg></button>
+  <div class="grow"></div>
+  <button class="rail-btn on" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+</nav>
+  <div class="set-body">
+    <nav class="snav" aria-label="Settings sections">
+      <h2>Settings</h2>
+      <a>Appearance</a>
+      <a>Shell</a>
+      <a>Security</a>
+      <a class="sel">SSH keys</a>
+      <a>Keybindings</a>
+    </nav>
+    <main class="scontent" id="sc">
+      <div class="scol">
+        <div><h1>Settings</h1><p class="lead">Changes apply to every window straight away.</p></div>
+        <section id="s-sshkeys">
+          <div class="sect-title">SSH keys</div>
+          <div class="card card-pad">
+            <div class="card-tools"><span class="d">Private keys are stored in the vault. Only public keys can be copied out.</span><span class="btns"><button class="btn btn--sm" id="btn-import">Import&hellip;</button><button class="btn btn--primary btn--sm" id="btn-generate">Generate key&hellip;</button></span></div>
+            <div id="keylist">
+              <div class="key"><div class="top"><span class="nm">id_ed25519</span><span class="chip">ed25519</span><span class="used">Used by 4 hosts</span></div><div class="fp mono">SHA256:Qm3vN8rT0cYk1xLw5Zp2dJf7HbA9sEuG4oVtXiCnR6M</div><div class="acts"><button class="btn btn--sm">Copy public key</button><button class="btn btn--quiet btn--sm">Rename</button><button class="btn btn--quiet btn--sm">Delete</button></div></div>
+              <div class="key"><div class="top"><span class="nm">work-deploy</span><span class="chip">RSA-4096</span><span class="used">Used by 2 hosts</span></div><div class="fp mono">SHA256:Hy7aP1eWq9Ds3KmB6uNlRz0TgFj2cXoVb8YtIiA4Lk5</div><div class="acts"><button class="btn btn--sm">Copy public key</button><button class="btn btn--quiet btn--sm">Rename</button><button class="btn btn--quiet btn--sm">Delete</button></div></div>
+              <div class="key"><div class="top"><span class="nm">yubikey</span><span class="chip">sk-ed25519</span><span class="used">Unused</span></div><div class="fp mono">SHA256:Bd5oU2nXr8LfG0wJq7ZsTy4Ec1VaKhM9PiNtCx3Rk6A</div><div class="acts"><button class="btn btn--sm">Copy public key</button><button class="btn btn--quiet btn--sm">Rename</button><button class="btn btn--quiet btn--sm">Delete</button></div></div>
+            </div>
+            <div class="row"><div class="lab"><b>Use ssh-agent</b><span class="hint">Try keys loaded in the running agent before the keys above.</span></div><div class="ctl"><span class="chip chip--ok" id="agent-chip"><span class="dot"></span>Agent running &middot; 2 keys</span><button class="switch on" id="sw-agent" role="switch" aria-checked="true" aria-label="Use ssh-agent"></button></div></div>
+          </div>
+        </section>
+        <section id="s-known">
+          <div class="sect-title">Known hosts</div>
+          <div class="card card-pad">
+            <div class="kh hd"><span>Host</span><span>Key type</span><span>Fingerprint</span><span></span></div>
+            <div class="kh"><span class="h mono">fennec.lan</span><span class="chip">ed25519</span><span class="fp mono">SHA256:Zt4kM0qB9xWc2LdE7nRyUo1FjA6hSvPg3IbXeTa8CmN</span><button class="btn btn--quiet btn--sm">Remove</button></div>
+            <div class="kh"><span class="h mono">nas.lan:2222</span><span class="chip">RSA-4096</span><span class="fp mono">SHA256:Lw9eC3rJv5NpQ1xTb8HzYk0Ud2FaGoMi7SnXtRc4EhB</span><button class="btn btn--quiet btn--sm">Remove</button></div>
+            <div class="kh"><span class="h mono">web-01.example.com</span><span class="chip">ed25519</span><span class="fp mono">SHA256:Ve6uH2sKd8ZqA0nTp5WjXl3RyCb9FgMo1IiNtEx7Ua4</span><button class="btn btn--quiet btn--sm">Remove</button></div>
+            <div class="kh"><span class="h mono">db-primary</span><span class="chip">ed25519</span><span class="fp mono">SHA256:Ng1tX7aQe4WbJ9cLr2UyDo6ZkSf0HvPm8IiTzCn3EhB</span><button class="btn btn--quiet btn--sm">Remove</button></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<footer class="statusbar"><span id="sb-msg">pwsh 7.5 &middot; UTF-8 &middot; 120&times;32 &middot; Vault unlocked</span><span class="r"><span id="sb-theme">Aurora &middot; Dark</span><b id="clock">14:32</b></span></footer>
+
+<div class="scrim" id="dlg-generate">
+  <div class="card dialog" role="dialog" aria-modal="true" aria-labelledby="t-gen">
+    <div><h2 id="t-gen">Generate SSH key</h2><p class="sub">The private key is stored in the vault. Copy the public key to the server.</p></div>
+    <label><b>Name</b><input class="field" value="laptop" aria-label="Name"></label>
+    <label><b>Type</b><span class="seg full" id="seg-type" role="group" aria-label="Key type"><button class="on">ed25519</button><button>RSA 4096</button></span></label>
+    <div class="two"><label><b>Passphrase <span class="opt">(optional)</span></b><input class="field" type="password" aria-label="Passphrase"></label><label><b>Confirm</b><input class="field" type="password" aria-label="Confirm passphrase"></label></div>
+    <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn btn--primary" data-close>Generate</button></div>
+  </div>
+</div>
+
+<div class="scrim" id="dlg-import">
+  <div class="card dialog" role="dialog" aria-modal="true" aria-labelledby="t-imp">
+    <div><h2 id="t-imp">Import SSH key</h2><p class="sub">Paste an OpenSSH or PEM private key, or choose a file.</p></div>
+    <label><b>Private key</b><textarea class="field mono bad" rows="5" aria-label="Private key">-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0
+-----END OPENSSH PRIVATE KEY-----</textarea></label>
+    <div class="file-row"><button class="btn btn--sm">Choose file&hellip;</button><span>or drop a file here</span></div>
+    <div><label><b>Passphrase <span class="opt">(if the key has one)</span></b><input class="field bad" type="password" value="wrong" aria-label="Passphrase"></label><div class="errline"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>Could not read this key. Check the passphrase and the key format.</div></div>
+    <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn btn--primary" data-close>Import</button></div>
+  </div>
+</div>
+
+<div class="scrim" id="dlg-hostkey-new">
+  <div class="card dialog" role="dialog" aria-modal="true" aria-labelledby="t-new">
+    <div><h2 id="t-new">Trust this host?</h2><p class="sub">First connection to this server. Check the fingerprint against one you know.</p></div>
+    <dl class="kv"><dt>Host</dt><dd class="mono">fennec.lan:22</dd><dt>Key type</dt><dd>ed25519</dd></dl>
+    <div class="fp-box mono"><small>SHA256 fingerprint</small>SHA256:Zt4kM0qB9xWc2LdE7nRyUo1FjA6hSvPg3IbXeTa8CmN</div>
+    <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn btn--primary" data-close>Trust and connect</button></div>
+  </div>
+</div>
+
+<div class="scrim" id="dlg-hostkey-changed">
+  <div class="card dialog" role="dialog" aria-modal="true" aria-labelledby="t-chg">
+    <div><h2 id="t-chg">Host key changed</h2><p class="sub">fennec.lan:22 presented a different key than the one saved.</p></div>
+    <div class="callout err"><div class="hd"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/></svg>Danger</div><b>The host key changed.</b><span class="why">The server may have been reinstalled, or someone may be intercepting the connection. Ask the server owner before you continue.</span></div>
+    <div class="fp-box mono old"><small>Saved (ed25519)</small>SHA256:Zt4kM0qB9xWc2LdE7nRyUo1FjA6hSvPg3IbXeTa8CmN</div>
+    <div class="fp-box mono"><small>Offered now (ed25519)</small>SHA256:Pq8eD3mXs1WvA6nLr0TyJo5ZkBf2HcUg7IbNtCx9EaM</div>
+    <div class="foot"><button class="btn btn--quiet" data-close>Replace and connect</button><span class="grow"></span><button class="btn btn--primary" data-close>Cancel</button></div>
+  </div>
+</div>
+
+<div class="scrim" id="dlg-password">
+  <div class="card dialog" role="dialog" aria-modal="true" aria-labelledby="t-pw">
+    <div><h2 id="t-pw">Password for kit@fennec.lan</h2><p class="sub">This host uses password sign-in.</p></div>
+    <label><b>Password</b><span class="pw"><input class="field" id="pw-field" type="password" autocomplete="off" aria-label="Password"><button class="tb-btn" id="btn-eye" title="Show password" aria-label="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
+    <label class="check"><input type="checkbox" checked><span>Save in vault</span></label>
+    <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn btn--primary" data-close>Connect</button></div>
+  </div>
+</div>
+</div>
+<script>
+(function () {
+  var SKINS = ["aurora", "onyx", "mochi"], NAMES = { aurora: "Aurora", onyx: "Onyx", mochi: "Mochi" };
+  var root = document.documentElement;
+  var valid = ["aurora-dark", "aurora-light", "onyx-dark", "onyx-light", "mochi"];
+  var lastMode = "dark";
+  function get() { return root.getAttribute("data-theme") || "aurora-dark"; }
+  function skinOf(t) { return t.split("-")[0]; }
+  function modeOf(t) { return t === "mochi" ? "dark" : t.split("-")[1]; }
+  var q = new URLSearchParams(location.search).get("theme");
+  if (valid.indexOf(q) < 0) { q = null; try { var s = localStorage.getItem("maomi-theme"); if (valid.indexOf(s) >= 0) q = s; } catch (e) {} }
+  root.setAttribute("data-theme", q || "aurora-dark");
+  if (get() !== "mochi") lastMode = modeOf(get());
+  function sync() {
+    var t = get(), skin = skinOf(t), mode = modeOf(t), mochi = skin === "mochi";
+    document.querySelectorAll("[data-skin]").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-skin") === skin); });
+    document.querySelectorAll("[data-mode]").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-mode") === mode); });
+    var mb = document.getElementById("mode-btn");
+    if (mb) { mb.disabled = mochi; mb.title = mochi ? "Mochi is dark only" : "Toggle dark / light (Ctrl+Shift+L)"; }
+    var sm = document.getElementById("seg-mode");
+    if (sm) { sm.setAttribute("aria-disabled", mochi ? "true" : "false"); }
+    var sl = document.getElementById("sb-theme"); if (sl) sl.textContent = NAMES[skin] + " · " + (mode === "dark" ? "Dark" : "Light");
+  }
+  window.setTheme = function (skin, mode) {
+    var cur = get(), s = skin || skinOf(cur);
+    if (mode) lastMode = mode;
+    var t = s === "mochi" ? "mochi" : s + "-" + (mode || lastMode);
+    root.setAttribute("data-theme", t);
+    try { localStorage.setItem("maomi-theme", t); } catch (e) {}
+    sync();
+  };
+  function cycleSkin() { setTheme(SKINS[(SKINS.indexOf(skinOf(get())) + 1) % SKINS.length], null); }
+  function flipMode() { if (get() === "mochi") return; setTheme(null, modeOf(get()) === "dark" ? "light" : "dark"); }
+  document.querySelectorAll(".tb-tools [data-skin]").forEach(function (b) { b.addEventListener("click", function () { setTheme(b.getAttribute("data-skin"), null); }); });
+  var mb = document.getElementById("mode-btn");
+  if (mb) mb.addEventListener("click", flipMode);
+  document.addEventListener("keydown", function (e) {
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "k") { e.preventDefault(); cycleSkin(); }
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "l") { e.preventDefault(); flipMode(); }
+  });
+  function tick() { var c = document.getElementById("clock"); if (c) { var d = new Date(); c.textContent = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2); } }
+  tick(); setInterval(tick, 20000);
+  sync();
+})();
+</script>
+
+<script>
+(function () {
+  var app = document.querySelector(".app");
+  var ss = document.getElementById("seg-state");
+  var states = ["keys", "generate", "import", "hostkey-new", "hostkey-changed", "password"];
+  function setModal(s) {
+    app.setAttribute("data-modal", s === "keys" ? "none" : s);
+    ss.querySelectorAll("button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-state") === s); });
+  }
+  ss.addEventListener("click", function (ev) { var b = ev.target.closest("button"); if (b) setModal(b.getAttribute("data-state")); });
+  document.querySelectorAll("[data-close]").forEach(function (b) { b.addEventListener("click", function () { setModal("keys"); }); });
+  document.querySelectorAll(".scrim").forEach(function (s) { s.addEventListener("mousedown", function (ev) { if (ev.target === s) setModal("keys"); }); });
+  document.getElementById("btn-generate").addEventListener("click", function () { setModal("generate"); });
+  document.getElementById("btn-import").addEventListener("click", function () { setModal("import"); });
+  document.getElementById("seg-type").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b) return;
+    this.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
+  });
+  var sw = document.getElementById("sw-agent"), chip = document.getElementById("agent-chip");
+  sw.addEventListener("click", function () {
+    var on = sw.classList.toggle("on"); sw.setAttribute("aria-checked", on);
+    chip.className = "chip" + (on ? " chip--ok" : "");
+    chip.innerHTML = '<span class="dot"></span>' + (on ? "Agent running \u00B7 2 keys" : "Not used");
+  });
+  document.getElementById("btn-eye").addEventListener("click", function () { var p = document.getElementById("pw-field"); p.type = p.type === "password" ? "text" : "password"; });
+  document.addEventListener("keydown", function (ev) { if (ev.code === "Escape" && app.getAttribute("data-modal") !== "none") setModal("keys"); });
+  var q = new URLSearchParams(location.search).get("state");
+  if (states.indexOf(q) > 0) setModal(q);
+})();
+</script>
+</body>
+</html>

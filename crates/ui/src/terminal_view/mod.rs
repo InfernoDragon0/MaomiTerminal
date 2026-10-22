@@ -15,9 +15,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, KeyDownEvent, Keystroke, MouseButton, ParentElement as _, Render, Styled as _,
-    Subscription, Task, Window, div, px,
+    App, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, KeyDownEvent, Keystroke, MouseButton, ParentElement as _, Render, SharedString,
+    Styled as _, Subscription, Task, Window, div, px,
 };
 use maomi_term::{PromptState, PtySession, QueryPalette, Rgb, SessionOptions, TermEvent, TermMode};
 
@@ -67,12 +67,25 @@ pub enum TerminalViewEvent {
     OpenFolder(PathBuf),
 }
 
+/// A remote pane's connection state, shown in the bottom banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Connection {
+    Connecting(SharedString),
+    Failed(SharedString),
+}
+
+/// Starts a new connection for this pane (Enter on the exit or failure banner).
+pub type Reconnect = Rc<dyn Fn(&mut Window, &mut App)>;
+
 pub struct TerminalView {
     session: Arc<PtySession>,
     /// How the session was started; reused by [`Self::restart`].
     options: SessionOptions,
     /// `Some(code)` once the shell has exited.
     exited: Option<Option<u32>>,
+    connection: Option<Connection>,
+    /// Set for remote panes: Enter reconnects instead of starting a local shell.
+    reconnect: Option<Reconnect>,
     focus_handle: FocusHandle,
     font: TerminalFont,
     cursor_on: bool,
@@ -122,6 +135,8 @@ impl TerminalView {
             session,
             options,
             exited: None,
+            connection: None,
+            reconnect: None,
             focus_handle,
             font: TerminalFont::default(),
             cursor_on: true,
@@ -153,17 +168,41 @@ impl TerminalView {
     /// Starts a fresh shell in this pane with the original options.
     pub fn restart(&mut self, cx: &mut Context<Self>) {
         match PtySession::spawn(self.options.clone()) {
-            Ok(session) => {
-                let session = Arc::new(session);
-                self._events = Self::listen(&session, cx);
-                self.session = session;
-                self.exited = None;
-                self.query_theme = None;
-                self.pane = Rc::default();
-                cx.emit(TerminalViewEvent::Restarted);
-                cx.notify();
-            }
+            Ok(session) => self.replace_session(session, cx),
             Err(err) => tracing::error!(%err, "failed to restart the shell"),
+        }
+    }
+
+    /// Shows `session` in this pane instead of the current one (a connection that opened, or
+    /// a restart). Clears the connection banner.
+    pub fn replace_session(&mut self, session: PtySession, cx: &mut Context<Self>) {
+        let session = Arc::new(session);
+        session.resize(self.session.size());
+        self._events = Self::listen(&session, cx);
+        self.session = session;
+        self.exited = None;
+        self.connection = None;
+        self.query_theme = None;
+        self.pane = Rc::default();
+        cx.emit(TerminalViewEvent::Restarted);
+        cx.notify();
+    }
+
+    pub fn set_connection(&mut self, connection: Option<Connection>, cx: &mut Context<Self>) {
+        self.connection = connection;
+        cx.notify();
+    }
+
+    pub fn set_reconnect(&mut self, reconnect: Reconnect) {
+        self.reconnect = Some(reconnect);
+    }
+
+    /// Enter on a banner: reconnect a remote pane, restart a local one.
+    fn restart_or_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.reconnect.clone() {
+            // Deferred: the reconnect updates this view, which is mid-update here.
+            Some(reconnect) => window.defer(cx, move |window, cx| reconnect(window, cx)),
+            None => self.restart(cx),
         }
     }
 
@@ -220,6 +259,12 @@ impl TerminalView {
         self.send_input(input::encode_paste(text, bracketed));
     }
 
+    /// Types `command` as one paste and presses Enter, so multi-line commands run as a block.
+    pub fn run_command(&self, command: &str) {
+        self.insert_text(command.trim_end());
+        self.send_input(b"\r".to_vec());
+    }
+
     /// Bytes for `keystroke`: win32-input-mode records when ConPTY asked for them, else VT.
     fn encode_key(&self, keystroke: &Keystroke, prefer_char: bool) -> Option<Vec<u8>> {
         // The inbox ConPTY accepts win32 key records without announcing ?9001h, but a tight
@@ -253,11 +298,15 @@ impl TerminalView {
         self.session.write(bytes);
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        if self.exited.is_some() {
+        if matches!(self.connection, Some(Connection::Connecting(_))) {
+            cx.stop_propagation();
+            return;
+        }
+        if self.exited.is_some() || self.connection.is_some() {
             if keystroke.key == "enter" && !keystroke.modifiers.modified() {
-                self.restart(cx);
+                self.restart_or_reconnect(window, cx);
             }
             cx.stop_propagation();
             return;
@@ -380,9 +429,25 @@ impl Render for TerminalView {
             self.session.set_query_palette(query_palette(&colors));
         }
         let focused = self.focus_handle.is_focused(window);
-        let banner = self.exited.map(|code| {
-            let p = theme.palette();
-            let code = code.map_or_else(|| "unknown".to_owned(), |c| c.to_string());
+        let p = theme.palette();
+        let banner = match (&self.connection, self.exited) {
+            (Some(Connection::Connecting(text)), _) => Some((text.clone(), p.muted)),
+            (Some(Connection::Failed(text)), _) => Some((
+                format!("{text} \u{00b7} Press Enter to reconnect").into(),
+                p.err,
+            )),
+            (None, Some(code)) => {
+                let code = code.map_or_else(|| "unknown".to_owned(), |c| c.to_string());
+                let text = if self.reconnect.is_some() {
+                    format!("Connection closed (code {code}) \u{00b7} Press Enter to reconnect")
+                } else {
+                    format!("Shell exited (code {code}) \u{00b7} Press Enter to restart")
+                };
+                Some((text.into(), p.muted))
+            }
+            (None, None) => None,
+        };
+        let banner = banner.map(|(text, color): (SharedString, crate::Color)| {
             div()
                 .absolute()
                 .left_0()
@@ -391,20 +456,18 @@ impl Render for TerminalView {
                 .px(px(12.))
                 .py(px(6.))
                 .bg(p.surface_2.to_hsla())
-                .text_color(p.muted.to_hsla())
+                .text_color(color.to_hsla())
                 .text_size(px(12.))
-                .child(format!(
-                    "Shell exited (code {code}) \u{00b7} Press Enter to restart"
-                ))
+                .child(text)
         });
         div()
             .id("terminal")
             .relative()
             .track_focus(&self.focus_handle)
             .key_context(KEY_CONTEXT)
-            .on_key_down(
-                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key_down(event, cx)),
-            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.on_key_down(event, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &SendTab, _, cx| this.send_key("tab", cx)))
             .on_action(cx.listener(|this, _: &SendBackTab, _, cx| this.send_key("shift-tab", cx)))
             .on_action(cx.listener(|this, _: &CopyOrInterrupt, _, cx| {

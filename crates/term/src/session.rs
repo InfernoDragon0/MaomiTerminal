@@ -1,8 +1,9 @@
-//! A shell running in a PTY, parsed into an alacritty_terminal grid.
+//! A shell running in a local PTY or behind a remote channel (SSH), parsed into an
+//! alacritty_terminal grid.
 //!
-//! Threads per session: a reader (PTY → OSC scan → `Term`), a writer (input queue → PTY) and a
-//! waiter (child exit → close the PTY → `Exited`). The UI reads through [`PtySession::snapshot`]
-//! and the [`TermEvent`] channel.
+//! Threads per session: a reader (output → OSC scan → `Term`), a writer (input queue → shell)
+//! and a waiter (shell exit → close the PTY → `Exited`). The UI reads through
+//! [`PtySession::snapshot`] and the [`TermEvent`] channel.
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -23,7 +24,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 
 use crate::integration;
 use crate::osc::{OscScanner, PromptMark, ShellMark};
-use crate::shell::{Shell, default_shell};
+use crate::shell::{Shell, ShellKind, default_shell};
 use crate::snapshot::GridSnapshot;
 
 /// Bytes read from the PTY per lock of the terminal.
@@ -339,17 +340,51 @@ impl EventListener for EventProxy {
     }
 }
 
+/// Resizes and ends a remote shell.
+pub trait RemoteControl: Send + Sync {
+    fn resize(&self, size: TermSize);
+    /// Ends the shell; the reader then hits EOF and the exit receiver resolves.
+    fn close(&self);
+}
+
+/// The shell end of a session that is not a local PTY, such as an SSH channel.
+pub struct RemoteIo {
+    /// Shell output; returns EOF once the remote side closes.
+    pub reader: Box<dyn Read + Send>,
+    pub writer: Box<dyn Write + Send>,
+    pub control: Box<dyn RemoteControl>,
+    /// Gets the exit code (None when the remote sent none) as the shell ends.
+    pub exit: mpsc::Receiver<Option<u32>>,
+    /// Shown as the shell name, e.g. "ssh fennec".
+    pub label: String,
+}
+
+/// Where the shell runs.
+enum Process {
+    Local {
+        /// Taken (and so closed) when the child exits; ConPTY only ends the output pipe on close.
+        master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+        killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    },
+    Remote(Box<dyn RemoteControl>),
+}
+
 /// A running shell and its terminal state.
 pub struct PtySession {
     term: Arc<FairMutex<Term<EventProxy>>>,
     shared: Arc<Shared>,
     events: async_channel::Receiver<TermEvent>,
-    /// Taken (and so closed) when the child exits; ConPTY only ends the output pipe on close.
-    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    process: Process,
     pid: Option<u32>,
     shell: Shell,
     osc52_copy: bool,
+}
+
+/// The parts every session shares, built by [`start`].
+struct Started {
+    term: Arc<FairMutex<Term<EventProxy>>>,
+    shared: Arc<Shared>,
+    events: async_channel::Receiver<TermEvent>,
 }
 
 fn term_config(scrollback: usize, cursor_shape: CursorShape, osc52_copy: bool) -> TermConfig {
@@ -411,81 +446,81 @@ impl PtySession {
         let pid = child.process_id();
         let killer = child.clone_killer();
         let reader = pair.master.try_clone_reader()?;
-        let mut writer = pair.master.take_writer()?;
-
-        let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
-        let (events_tx, events_rx) = async_channel::unbounded();
-        let shared = Arc::new(Shared {
-            events: events_tx,
-            wakeup_pending: AtomicBool::new(false),
-            win32_input: AtomicBool::new(false),
-            state: Mutex::new(ShellState {
-                cwd,
-                ..ShellState::default()
-            }),
-            size: Mutex::new(size),
-            palette: Mutex::new(QueryPalette::default()),
-            input: input_tx,
-        });
-
-        let config = term_config(options.scrollback, options.cursor_shape, options.osc52_copy);
-        let proxy = EventProxy {
-            shared: shared.clone(),
-        };
-        let term = Arc::new(FairMutex::new(Term::new(config, &size, proxy)));
+        let writer = pair.master.take_writer()?;
         let master = Arc::new(Mutex::new(Some(pair.master)));
 
-        thread::Builder::new()
-            .name("maomi-pty-writer".into())
-            .spawn(move || {
-                for bytes in input_rx {
-                    if writer
-                        .write_all(&bytes)
-                        .and_then(|()| writer.flush())
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })?;
-
-        let (drained_tx, drained_rx) = mpsc::channel::<()>();
-        {
-            let term = term.clone();
-            let shared = shared.clone();
-            thread::Builder::new()
-                .name("maomi-pty-reader".into())
-                .spawn(move || {
-                    read_loop(reader, &term, &shared);
-                    let _ = drained_tx.send(());
-                })?;
-        }
-
-        {
-            let master = master.clone();
-            let shared = shared.clone();
-            thread::Builder::new()
-                .name("maomi-pty-waiter".into())
-                .spawn(move || {
-                    let code = child.wait().ok().map(|status| status.exit_code());
-                    drop(master.lock().unwrap_or_else(PoisonError::into_inner).take());
-                    let _ = drained_rx.recv_timeout(DRAIN_TIMEOUT);
-                    shared.state().exited = Some(code);
-                    shared.wake();
-                    shared.send(TermEvent::Exited(code));
-                })?;
-        }
+        let waiter_master = master.clone();
+        let started = start(reader, writer, cwd, size, &options, move || {
+            let code = child.wait().ok().map(|status| status.exit_code());
+            drop(
+                waiter_master
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take(),
+            );
+            code
+        })?;
 
         Ok(Self {
-            term,
-            shared,
-            events: events_rx,
-            master,
-            killer: Mutex::new(killer),
+            term: started.term,
+            shared: started.shared,
+            events: started.events,
+            process: Process::Local {
+                master,
+                killer: Mutex::new(killer),
+            },
             pid,
             shell,
             osc52_copy: options.osc52_copy,
         })
+    }
+
+    /// Wraps a remote shell (see [`RemoteIo`]). `options.shell`, `cwd`, `env` and
+    /// `shell_integration` do not apply: the remote shell already runs.
+    pub fn attach(io: RemoteIo, options: SessionOptions) -> anyhow::Result<Self> {
+        let size = options.size.clamped();
+        io.control.resize(size);
+        let exit = io.exit;
+        let started = start(io.reader, io.writer, None, size, &options, move || {
+            exit.recv().ok().flatten()
+        })?;
+        Ok(Self {
+            term: started.term,
+            shared: started.shared,
+            events: started.events,
+            process: Process::Remote(io.control),
+            pid: None,
+            shell: Shell {
+                program: io.label.into(),
+                args: Vec::new(),
+                kind: ShellKind::Other,
+            },
+            osc52_copy: options.osc52_copy,
+        })
+    }
+
+    /// A remote session with nothing behind it, shown while a connection opens. Input is
+    /// dropped; it ends (with no exit code) when killed or dropped.
+    pub fn placeholder(label: impl Into<String>, options: SessionOptions) -> anyhow::Result<Self> {
+        let (output, reader) = mpsc::channel::<Vec<u8>>();
+        let (exit_tx, exit) = mpsc::channel();
+        let io = RemoteIo {
+            reader: Box::new(ChunkReader {
+                chunks: reader,
+                chunk: Vec::new(),
+                pos: 0,
+            }),
+            writer: Box::new(std::io::sink()),
+            control: Box::new(Placeholder(Mutex::new(Some((output, exit_tx))))),
+            exit,
+            label: label.into(),
+        };
+        Self::attach(io, options)
+    }
+
+    /// True for SSH and other remote shells; [`Self::cwd`] is then a path on the remote machine.
+    pub fn is_remote(&self) -> bool {
+        matches!(self.process, Process::Remote(_))
     }
 
     /// Changes the scrollback size and default cursor shape of a running session.
@@ -558,14 +593,18 @@ impl PtySession {
             }
             *current = size;
         }
-        if let Some(master) = self
-            .master
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            && let Err(err) = master.resize(size.pty_size())
-        {
-            tracing::warn!(%err, "pty resize failed");
+        match &self.process {
+            Process::Local { master, .. } => {
+                if let Some(master) = master
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .as_ref()
+                    && let Err(err) = master.resize(size.pty_size())
+                {
+                    tracing::warn!(%err, "pty resize failed");
+                }
+            }
+            Process::Remote(control) => control.resize(size),
         }
         self.term.lock().resize(size);
         self.shared.wake();
@@ -620,13 +659,13 @@ impl PtySession {
 
     /// Ends the shell. `Exited` follows once the output is drained.
     pub fn kill(&self) {
-        if let Err(err) = self
-            .killer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .kill()
-        {
-            tracing::debug!(%err, "kill failed (child probably exited already)");
+        match &self.process {
+            Process::Local { killer, .. } => {
+                if let Err(err) = killer.lock().unwrap_or_else(PoisonError::into_inner).kill() {
+                    tracing::debug!(%err, "kill failed (child probably exited already)");
+                }
+            }
+            Process::Remote(control) => control.close(),
         }
     }
 
@@ -697,13 +736,125 @@ impl Drop for PtySession {
         if self.is_running() {
             self.kill();
         }
-        drop(
-            self.master
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take(),
-        );
+        if let Process::Local { master, .. } = &self.process {
+            drop(master.lock().unwrap_or_else(PoisonError::into_inner).take());
+        }
     }
+}
+
+/// Output for [`PtySession::placeholder`]: none until the senders drop, then EOF.
+struct ChunkReader {
+    chunks: mpsc::Receiver<Vec<u8>>,
+    chunk: Vec<u8>,
+    pos: usize,
+}
+
+impl Read for ChunkReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.pos >= self.chunk.len() {
+            match self.chunks.recv() {
+                Ok(chunk) => {
+                    self.chunk = chunk;
+                    self.pos = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = buf.len().min(self.chunk.len() - self.pos);
+        buf[..n].copy_from_slice(&self.chunk[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// Holds the placeholder's output and exit senders; closing drops them, which ends it.
+type PlaceholderEnds = (mpsc::Sender<Vec<u8>>, mpsc::Sender<Option<u32>>);
+
+struct Placeholder(Mutex<Option<PlaceholderEnds>>);
+
+impl RemoteControl for Placeholder {
+    fn resize(&self, _: TermSize) {}
+
+    fn close(&self) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+    }
+}
+
+/// Builds the terminal and starts the writer, reader and waiter threads. `wait` blocks until
+/// the shell ends and returns its exit code.
+fn start(
+    reader: Box<dyn Read + Send>,
+    mut writer: Box<dyn Write + Send>,
+    cwd: Option<PathBuf>,
+    size: TermSize,
+    options: &SessionOptions,
+    wait: impl FnOnce() -> Option<u32> + Send + 'static,
+) -> anyhow::Result<Started> {
+    let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let shared = Arc::new(Shared {
+        events: events_tx,
+        wakeup_pending: AtomicBool::new(false),
+        win32_input: AtomicBool::new(false),
+        state: Mutex::new(ShellState {
+            cwd,
+            ..ShellState::default()
+        }),
+        size: Mutex::new(size),
+        palette: Mutex::new(QueryPalette::default()),
+        input: input_tx,
+    });
+
+    let config = term_config(options.scrollback, options.cursor_shape, options.osc52_copy);
+    let proxy = EventProxy {
+        shared: shared.clone(),
+    };
+    let term = Arc::new(FairMutex::new(Term::new(config, &size, proxy)));
+
+    thread::Builder::new()
+        .name("maomi-pty-writer".into())
+        .spawn(move || {
+            for bytes in input_rx {
+                if writer
+                    .write_all(&bytes)
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })?;
+
+    let (drained_tx, drained_rx) = mpsc::channel::<()>();
+    {
+        let term = term.clone();
+        let shared = shared.clone();
+        thread::Builder::new()
+            .name("maomi-pty-reader".into())
+            .spawn(move || {
+                read_loop(reader, &term, &shared);
+                let _ = drained_tx.send(());
+            })?;
+    }
+
+    {
+        let shared = shared.clone();
+        thread::Builder::new()
+            .name("maomi-pty-waiter".into())
+            .spawn(move || {
+                let code = wait();
+                let _ = drained_rx.recv_timeout(DRAIN_TIMEOUT);
+                shared.state().exited = Some(code);
+                shared.wake();
+                shared.send(TermEvent::Exited(code));
+            })?;
+    }
+
+    Ok(Started {
+        term,
+        shared,
+        events: events_rx,
+    })
 }
 
 fn read_loop(

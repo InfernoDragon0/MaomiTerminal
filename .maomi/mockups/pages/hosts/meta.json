@@ -1,0 +1,23 @@
+{
+  "id": "hosts",
+  "title": "Hosts panel",
+  "status": "review",
+  "version": 1,
+  "versions": [
+    {
+      "v": 1,
+      "at": 1792661989320,
+      "bytes": 36282
+    }
+  ],
+  "createdAt": 1792661989320,
+  "updatedAt": 1792662100793,
+  "plans": [
+    {
+      "plan": "p-mvg50cth6ccf",
+      "milestone": "m-mvjckknzi6h2"
+    }
+  ],
+  "plan": "p-mvg50cth6ccf",
+  "milestone": "m-mvjckknzi6h2"
+}

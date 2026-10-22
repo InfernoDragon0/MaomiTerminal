@@ -1,4 +1,5 @@
-//! The full-width settings page: Appearance, Shell and a read-only Keybindings list.
+//! The full-width settings page: Appearance, Shell, Security, Updates and a read-only
+//! Keybindings list.
 //!
 //! Every control writes straight into the config through [`settings::update_config`]; windows
 //! observe the config and re-apply it, so changes show everywhere at once.
@@ -17,13 +18,22 @@ use gpui_kit::{
 };
 use maomi_term::{CursorShape, Shell, available_shells, default_shell};
 
+use super::ssh_keys::SshKeysSection;
 use crate::settings::{self, CURSOR_STYLES, SYSTEM_MODE};
 use crate::updates::{self, UpdateState};
+use crate::vault::{self, UNLOCK_ASK, UNLOCK_KEYSTORE, UNLOCK_PASSPHRASE, VaultStatus};
 use crate::{Mode, Palette, Skin, TERMINAL_FAMILY, Theme, set_theme};
 
 type LabelSelect = SelectState<SearchableVec<SharedString>>;
 
-const SECTIONS: [&str; 4] = ["Appearance", "Shell", "Updates", "Keybindings"];
+const SECTIONS: [&str; 6] = [
+    "Appearance",
+    "Shell",
+    "Security",
+    "SSH keys",
+    "Updates",
+    "Keybindings",
+];
 
 pub struct SettingsPage {
     focus_handle: FocusHandle,
@@ -37,6 +47,11 @@ pub struct SettingsPage {
     font_size: Entity<InputState>,
     scrollback: Entity<InputState>,
     startup_dir: Entity<InputState>,
+    auto_lock: Entity<InputState>,
+    /// Whether Windows Hello can be asked; None until the background check answers.
+    presence: Option<bool>,
+    /// SSH keys and Known hosts.
+    ssh_keys: Entity<SshKeysSection>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -115,6 +130,26 @@ impl SettingsPage {
                 )
         });
 
+        let auto_lock = cx.new(|cx| {
+            InputState::new(window, cx)
+                .step(1.0)
+                .min(0.0)
+                .max(1440.0)
+                .default_value(config.security.auto_lock_minutes.to_string())
+        });
+        // Asking Windows can take a moment, so it stays off the UI thread.
+        cx.spawn(async move |page, cx| {
+            let available = cx
+                .background_executor()
+                .spawn(async { maomi_vault::presence_available() })
+                .await;
+            _ = page.update(cx, |page, cx| {
+                page.presence = Some(available);
+                cx.notify();
+            });
+        })
+        .detach();
+
         let subscriptions = vec![
             cx.subscribe_in(&font, window, |_, _, event: &SelectEvent<_>, _, cx| {
                 let SelectEvent::Confirm(Some(family)) = event else {
@@ -171,6 +206,15 @@ impl SettingsPage {
                     });
                 },
             ),
+            cx.subscribe_in(&auto_lock, window, |_, input, event: &InputEvent, _, cx| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                if let Ok(minutes) = input.read(cx).value().trim().parse::<u32>() {
+                    settings::update_config(cx, |c| c.security.auto_lock_minutes = minutes);
+                }
+            }),
+            cx.observe_global::<vault::VaultState>(|_, cx| cx.notify()),
             // Redraw when the theme or config changes elsewhere (title bar, shortcuts).
             cx.observe_global::<settings::Settings>(|_, cx| cx.notify()),
             cx.observe_global::<updates::Updates>(|_, cx| cx.notify()),
@@ -186,6 +230,9 @@ impl SettingsPage {
             font_size,
             scrollback,
             startup_dir,
+            auto_lock,
+            presence: None,
+            ssh_keys: cx.new(SshKeysSection::new),
             _subscriptions: subscriptions,
         }
     }
@@ -428,6 +475,98 @@ impl SettingsPage {
         )
     }
 
+    fn render_security(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let security = settings::config(cx).security;
+        let status = vault::status(cx);
+        let method = match security.unlock.as_str() {
+            UNLOCK_PASSPHRASE => UNLOCK_PASSPHRASE,
+            UNLOCK_ASK => UNLOCK_ASK,
+            _ => UNLOCK_KEYSTORE,
+        };
+        let methods = [
+            (UNLOCK_KEYSTORE, "OS keystore"),
+            (UNLOCK_PASSPHRASE, "Passphrase"),
+            (UNLOCK_ASK, "Always ask"),
+        ]
+        .map(|(key, label)| SegItem {
+            id: SharedString::from(format!("seg-unlock-{key}")),
+            label: label.into(),
+            on: method == key,
+            enabled: status != VaultStatus::Busy,
+            on_click: Box::new(move |window, cx| vault::set_method(key, window, cx)),
+        });
+        let method_hint = match method {
+            UNLOCK_PASSPHRASE => "Asked once per launch. The key comes from your passphrase.",
+            UNLOCK_ASK => "Asked every time the vault is needed after it locks.",
+            _ if cfg!(windows) => {
+                "The vault key is kept in Windows Credential Manager. No prompt at launch."
+            }
+            _ => "The vault key is kept in the OS keystore. No prompt at launch.",
+        };
+        let auto_lock_hint = if method == UNLOCK_PASSPHRASE {
+            "Not used with Passphrase, which stays unlocked until you quit"
+        } else {
+            "Minutes without using a saved credential. 0 = never."
+        };
+        // The check guards the keystore read; typing a passphrase already proves it is you.
+        let presence_ok = self.presence == Some(true);
+        let presence_hint = match self.presence {
+            None => "Checking for Windows Hello…",
+            Some(false) if cfg!(windows) => "Windows Hello is not set up on this machine",
+            Some(false) => "Touch ID support comes later",
+            Some(true) if method != UNLOCK_KEYSTORE => "Only used with the OS keystore method",
+            Some(true) => "Confirm with biometrics or your device PIN before the vault unlocks",
+        };
+        let can_change = method != UNLOCK_KEYSTORE && status != VaultStatus::Missing;
+        section(
+            "Security",
+            p,
+            vec![
+                vault_status(status, &security, p),
+                row("Unlock method", Some(method_hint), p, segmented(methods, p)),
+                row(
+                    "Auto-lock after idle",
+                    Some(auto_lock_hint),
+                    p,
+                    div()
+                        .w(px(120.))
+                        .child(NumberInput::new(&self.auto_lock))
+                        .into_any_element(),
+                ),
+                row(
+                    "Require Windows Hello / Touch ID",
+                    Some(presence_hint),
+                    p,
+                    Switch::new("switch-presence")
+                        .checked(security.require_presence && presence_ok)
+                        .disabled(!presence_ok || method != UNLOCK_KEYSTORE)
+                        .on_click(|on, _, cx| {
+                            let on = *on;
+                            settings::update_config(cx, |c| c.security.require_presence = on);
+                        })
+                        .into_any_element(),
+                ),
+                row(
+                    "Change passphrase",
+                    Some(if can_change {
+                        "Encrypts the vault again with a new passphrase"
+                    } else if method == UNLOCK_KEYSTORE {
+                        "Needs the Passphrase or Always ask method"
+                    } else {
+                        "Available once the vault exists"
+                    }),
+                    p,
+                    Button::new("settings-change-passphrase")
+                        .small()
+                        .label("Change passphrase…")
+                        .disabled(!can_change || status == VaultStatus::Busy)
+                        .on_click(|_, window, cx| vault::change_passphrase(window, cx))
+                        .into_any_element(),
+                ),
+            ],
+        )
+    }
+
     fn render_updates(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let auto = settings::config(cx).updates.auto;
         let state = updates::state(cx);
@@ -514,6 +653,7 @@ impl Render for SettingsPage {
         let p = theme.palette();
         let appearance = self.render_appearance(theme, p, cx);
         let shell = self.render_shell(p, cx);
+        let security = self.render_security(p, cx);
         let updates = self.render_updates(p, cx);
         let heading = div()
             .child(
@@ -549,8 +689,16 @@ impl Render for SettingsPage {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .children(
-                        [heading, appearance, shell, updates, keybindings(p)]
-                            .map(|item| div().flex_none().max_w(px(760.)).child(item)),
+                        [
+                            heading,
+                            appearance,
+                            shell,
+                            security,
+                            self.ssh_keys.clone().into_any_element(),
+                            updates,
+                            keybindings(p),
+                        ]
+                        .map(|item| div().flex_none().max_w(px(760.)).child(item)),
                     ),
             )
     }
@@ -575,6 +723,88 @@ fn shell_labels(shells: &[Option<Shell>]) -> Vec<SharedString> {
         }
     }
     labels.into_iter().map(Into::into).collect()
+}
+
+/// The vault's state with Lock now / Unlock…, the first row of Security.
+fn vault_status(
+    status: VaultStatus,
+    security: &maomi_config::SecuritySettings,
+    p: &Palette,
+) -> AnyElement {
+    let auto_locks = security.auto_lock_minutes > 0 && security.unlock != UNLOCK_PASSPHRASE;
+    let (chip, color, detail): (&str, crate::Color, SharedString) = match status {
+        VaultStatus::Unlocked if auto_locks => (
+            "Unlocked",
+            p.ok,
+            format!(
+                "Vault is open. Locks after {} minutes idle.",
+                security.auto_lock_minutes
+            )
+            .into(),
+        ),
+        VaultStatus::Unlocked => ("Unlocked", p.ok, "Vault is open until you quit.".into()),
+        VaultStatus::Locked => (
+            "Locked",
+            p.warn,
+            "Saved credentials are not available until you unlock.".into(),
+        ),
+        VaultStatus::Missing => (
+            "No vault",
+            p.muted,
+            "Created the first time a credential is saved.".into(),
+        ),
+        VaultStatus::Busy => ("Working", p.now, "Opening the vault…".into()),
+    };
+    let button = match status {
+        VaultStatus::Unlocked => Button::new("settings-vault-lock")
+            .small()
+            .label("Lock now")
+            .on_click(|_, _, cx| vault::lock(cx)),
+        VaultStatus::Missing => Button::new("settings-vault-create")
+            .small()
+            .label("Create now…")
+            .on_click(|_, window, cx| vault::unlock(window, cx, |_, _| {})),
+        _ => Button::new("settings-vault-unlock")
+            .primary()
+            .small()
+            .label("Unlock…")
+            .loading(status == VaultStatus::Busy)
+            .disabled(status == VaultStatus::Busy)
+            .on_click(|_, window, cx| vault::unlock(window, cx, |_, _| {})),
+    };
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(16.))
+        .py(px(12.))
+        .border_b_1()
+        .border_color(p.line.to_hsla())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(999.))
+                        .bg(color.with_alpha(0x26).to_hsla())
+                        .text_size(px(12.))
+                        .text_color(color.to_hsla())
+                        .child(div().size(px(6.)).rounded(px(3.)).bg(color.to_hsla()))
+                        .child(chip),
+                )
+                .child(div().text_color(p.muted.to_hsla()).child(detail)),
+        )
+        .child(div().flex_none().child(button))
+        .into_any_element()
 }
 
 fn format_number(value: f32) -> String {
@@ -635,7 +865,7 @@ fn segmented(items: impl IntoIterator<Item = SegItem>, p: &Palette) -> AnyElemen
         .into_any_element()
 }
 
-fn section(title: &'static str, p: &Palette, rows: Vec<AnyElement>) -> AnyElement {
+pub(super) fn section(title: &'static str, p: &Palette, rows: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -660,7 +890,7 @@ fn section(title: &'static str, p: &Palette, rows: Vec<AnyElement>) -> AnyElemen
         .into_any_element()
 }
 
-fn row(
+pub(super) fn row(
     label: &'static str,
     hint: Option<impl Into<SharedString>>,
     p: &Palette,

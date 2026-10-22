@@ -1,0 +1,28 @@
+{
+  "id": "snippets",
+  "title": "Snippets panel",
+  "status": "review",
+  "version": 2,
+  "versions": [
+    {
+      "v": 1,
+      "at": 1792572079204,
+      "bytes": 30430
+    },
+    {
+      "v": 2,
+      "at": 1792572087556,
+      "bytes": 30438
+    }
+  ],
+  "createdAt": 1792572079204,
+  "updatedAt": 1792572221083,
+  "plans": [
+    {
+      "plan": "p-mvg50cth6ccf",
+      "milestone": "m-mvhu8bgcl08j"
+    }
+  ],
+  "plan": "p-mvg50cth6ccf",
+  "milestone": "m-mvhu8bgcl08j"
+}

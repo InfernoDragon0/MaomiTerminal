@@ -14,6 +14,7 @@ pub mod shell;
 mod terminal;
 mod terminal_view;
 pub mod updates;
+pub mod vault;
 
 use gpui_kit::{App, Global, KeyBinding};
 
@@ -23,7 +24,9 @@ pub use component::apply;
 pub use fonts::TERMINAL_FAMILY;
 pub use palette::Palette;
 pub use terminal::TerminalColors;
-pub use terminal_view::{TerminalElement, TerminalFont, TerminalView, TerminalViewEvent};
+pub use terminal_view::{
+    Connection, Reconnect, TerminalElement, TerminalFont, TerminalView, TerminalViewEvent,
+};
 
 gpui_kit::actions!(maomi_ui, [CycleSkin, ToggleMode]);
 
@@ -191,6 +194,7 @@ pub fn set_theme(cx: &mut App, theme: Theme) {
 /// Call after `gpui_kit::init(cx)`.
 pub fn init(config: maomi_config::Config, cx: &mut App) {
     settings::install(config, cx);
+    vault::install(cx);
     let theme = settings::theme_from(&settings::config(cx), cx);
     fonts::load(cx);
     cx.bind_keys(terminal_view::key_bindings());

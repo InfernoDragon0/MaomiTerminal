@@ -55,6 +55,8 @@ pub struct Pane {
     command_epoch: u64,
     exited: bool,
     shell_kind: ShellKind,
+    /// An SSH pane: its cwd is a remote path, so there is no file drawer.
+    remote: bool,
     /// Created the first time the drawer opens.
     drawer: Option<(Entity<FileDrawer>, Subscription)>,
     drawer_open: bool,
@@ -74,12 +76,18 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let shell_name = session
-            .shell()
-            .program
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "shell".into());
+        let remote = session.is_remote();
+        // A remote label ("ssh fennec.lan") is not a path, so file_stem would cut it.
+        let shell_name = if remote {
+            session.shell().program.to_string_lossy().into_owned()
+        } else {
+            session
+                .shell()
+                .program
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "shell".into())
+        };
         let cwd = session.cwd();
         let shell_kind = session.shell().kind;
         let terminal = cx.new(|cx| TerminalView::with_session(session, options, window, cx));
@@ -103,6 +111,7 @@ impl Pane {
             command_epoch: 0,
             exited: false,
             shell_kind,
+            remote,
             drawer: None,
             drawer_open: false,
             drawer_width: drawer::DEFAULT_WIDTH,
@@ -136,6 +145,9 @@ impl Pane {
     }
 
     pub fn toggle_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote {
+            return;
+        }
         self.ensure_drawer(window, cx);
         self.drawer_open = !self.drawer_open;
         cx.notify();
@@ -144,6 +156,9 @@ impl Pane {
     /// Opens the drawer on `dir`, e.g. a folder Ctrl+clicked in the output. The drawer goes
     /// back to the shell's cwd the next time that changes.
     fn show_in_drawer(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote {
+            return;
+        }
         self.ensure_drawer(window, cx);
         self.drawer_open = true;
         if let Some((drawer, _)) = &self.drawer {
@@ -266,6 +281,8 @@ impl Pane {
                     .clone()
                     .filter(|t| !t.trim().is_empty() && !t.to_ascii_lowercase().ends_with(".exe"));
             }
+            // A remote cwd would send splits and the drawer to a local folder of the same name.
+            TerminalViewEvent::CwdChanged(_) if self.remote => return,
             TerminalViewEvent::CwdChanged(path) => {
                 self.cwd = Some(path.clone());
                 if let Some((drawer, _)) = &self.drawer {
@@ -353,71 +370,73 @@ impl Render for Pane {
         let running = self.prompt == PromptState::Running && !self.exited;
 
         let drag_label: SharedString = self.title().into();
-        let header = div()
-            .id("pane-header")
-            // Dragging the header moves the pane; drop zones appear on the other panes.
-            .on_drag(DraggedPane { pane: cx.entity() }, move |_, _, _, cx| {
-                let name = drag_label.clone();
-                cx.new(|_| DragPreview { name })
-            })
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .flex_none()
-            .h(px(28.))
-            .px(px(6.))
-            .text_size(px(11.5))
-            .text_color(p.muted.to_hsla())
-            .bg(p.surface_2.to_hsla())
-            .border_b_1()
-            .border_color(p.line.to_hsla())
-            .child(
-                drawer_pill(&self.cwd_name(), self.drawer_open, p)
-                    .on_click(cx.listener(|pane, _, window, cx| pane.toggle_drawer(window, cx))),
-            )
-            .child(div().flex_none().child(self.shell_name.clone()))
-            .when(running, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .min_w_0()
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.))
-                                .text_color(p.now.to_hsla())
-                                .child("●"),
-                        )
-                        .when_some(self.command.clone(), |d, name| {
-                            d.child(div().truncate().child(name))
-                        }),
+        let header =
+            div()
+                .id("pane-header")
+                // Dragging the header moves the pane; drop zones appear on the other panes.
+                .on_drag(DraggedPane { pane: cx.entity() }, move |_, _, _, cx| {
+                    let name = drag_label.clone();
+                    cx.new(|_| DragPreview { name })
+                })
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .flex_none()
+                .h(px(28.))
+                .px(px(6.))
+                .text_size(px(11.5))
+                .text_color(p.muted.to_hsla())
+                .bg(p.surface_2.to_hsla())
+                .border_b_1()
+                .border_color(p.line.to_hsla())
+                .when(!self.remote, |d| {
+                    d.child(drawer_pill(&self.cwd_name(), self.drawer_open, p).on_click(
+                        cx.listener(|pane, _, window, cx| pane.toggle_drawer(window, cx)),
+                    ))
+                })
+                .child(div().flex_none().child(self.shell_name.clone()))
+                .when(running, |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(10.))
+                                    .text_color(p.now.to_hsla())
+                                    .child("●"),
+                            )
+                            .when_some(self.command.clone(), |d, name| {
+                                d.child(div().truncate().child(name))
+                            }),
+                    )
+                })
+                .child(div().flex_1().min_w_0())
+                .child(
+                    header_button(
+                        "split",
+                        IconName::PanelRight,
+                        "Split right (Ctrl+Shift+D)",
+                        p,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitRight))),
                 )
-            })
-            .child(div().flex_1().min_w_0())
-            .child(
-                header_button(
-                    "split",
-                    IconName::PanelRight,
-                    "Split right (Ctrl+Shift+D)",
-                    p,
+                .child(
+                    header_button(
+                        "split-down",
+                        IconName::PanelBottom,
+                        "Split down (Ctrl+Shift+E)",
+                        p,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitDown))),
                 )
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitRight))),
-            )
-            .child(
-                header_button(
-                    "split-down",
-                    IconName::PanelBottom,
-                    "Split down (Ctrl+Shift+E)",
-                    p,
-                )
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitDown))),
-            )
-            .child(
-                header_button("close", IconName::Close, "Close pane (Ctrl+Shift+W)", p)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::Close))),
-            );
+                .child(
+                    header_button("close", IconName::Close, "Close pane (Ctrl+Shift+W)", p)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::Close))),
+                );
 
         let inner = div()
             .flex()

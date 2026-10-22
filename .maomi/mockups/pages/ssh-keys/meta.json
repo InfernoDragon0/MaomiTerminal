@@ -1,0 +1,28 @@
+{
+  "id": "ssh-keys",
+  "title": "SSH keys and host trust",
+  "status": "review",
+  "version": 2,
+  "versions": [
+    {
+      "v": 1,
+      "at": 1792662055825,
+      "bytes": 28140
+    },
+    {
+      "v": 2,
+      "at": 1792662066548,
+      "bytes": 28146
+    }
+  ],
+  "createdAt": 1792662055825,
+  "updatedAt": 1792662100786,
+  "plans": [
+    {
+      "plan": "p-mvg50cth6ccf",
+      "milestone": "m-mvjckknzi6h2"
+    }
+  ],
+  "plan": "p-mvg50cth6ccf",
+  "milestone": "m-mvjckknzi6h2"
+}

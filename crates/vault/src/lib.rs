@@ -3,6 +3,7 @@
 //! the app asks for passphrases and decides when to lock (dropping a [`Vault`] locks it).
 
 mod keystore;
+mod presence;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -16,6 +17,7 @@ use zeroize::Zeroizing;
 
 pub use age::secrecy::{ExposeSecret, SecretString};
 pub use keystore::{Keystore, MemoryKeystore, OsKeystore};
+pub use presence::{Presence, presence_available, verify_presence};
 
 /// Format version inside the encrypted payload.
 const PAYLOAD_VERSION: u32 = 1;

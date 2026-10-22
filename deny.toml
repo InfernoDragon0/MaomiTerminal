@@ -62,4 +62,7 @@ ignore = [
     { id = "RUSTSEC-2026-0368", reason = "velopack never calls ZipArchive::extract" },
     { id = "RUSTSEC-2026-0369", reason = "velopack never calls ZipStreamReader::extract" },
     { id = "RUSTSEC-2026-0367", reason = "SUID bits via ZipArchive::extract only; velopack never calls it" },
+    # rsa via russh (RSA keys): Marvin timing side channel, no fixed release yet. The client only
+    # signs a few times per login, which leaves little timing to measure. Drop when rsa ships a fix.
+    { id = "RUSTSEC-2023-0071", reason = "SSH client signs only at login; no fixed rsa release" },
 ]

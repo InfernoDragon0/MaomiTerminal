@@ -7,7 +7,8 @@ pub mod shell;
 pub mod snapshot;
 
 pub use session::{
-    EventProxy, PromptState, PtySession, QueryPalette, SessionOptions, TermEvent, TermSize,
+    EventProxy, PromptState, PtySession, QueryPalette, RemoteControl, RemoteIo, SessionOptions,
+    TermEvent, TermSize,
 };
 pub use shell::{Shell, ShellKind, available_shells, default_shell};
 pub use snapshot::{CellColor, GridSnapshot, SnapshotCell, SnapshotCursor};

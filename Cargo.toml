@@ -34,6 +34,8 @@ velopack = "=1.2.161"
 maomi-ui = { path = "crates/ui" }
 maomi-term = { path = "crates/term" }
 maomi-config = { path = "crates/config" }
+maomi-vault = { path = "crates/vault" }
+maomi-ssh = { path = "crates/ssh" }
 
 [workspace.lints.rust]
 # maomi-term may opt out later (PTY / OS handles); give it its own [lints] table when it does.

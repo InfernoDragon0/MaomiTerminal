@@ -11,9 +11,13 @@ use etcetera::app_strategy::{AppStrategy as _, AppStrategyArgs, choose_native_st
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+mod hosts;
 mod layout;
+mod snippets;
 
+pub use hosts::{Host, HostAuth, Hosts};
 pub use layout::{DrawerLayout, Layout, PaneLayout, TabLayout, WindowBounds, WindowLayout};
+pub use snippets::{Snippet, Snippets};
 
 const FILE_NAME: &str = "config.json";
 /// A file that failed to parse is moved here so the next save does not overwrite it.
@@ -42,6 +46,7 @@ pub struct Config {
     pub terminal: TerminalSettings,
     pub shell: ShellSettings,
     pub updates: UpdateSettings,
+    pub security: SecuritySettings,
 }
 
 /// Skin and mode, by name so this crate stays UI-free; the UI maps unknown names to its defaults.
@@ -97,6 +102,29 @@ pub struct UpdateSettings {
     pub last_version: Option<String>,
 }
 
+/// How the secrets vault unlocks and when it locks again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecuritySettings {
+    /// "keystore" (key in the OS keystore), "passphrase" (asked once per launch) or "ask"
+    /// (passphrase, asked again after every auto-lock).
+    pub unlock: String,
+    /// Lock after this many minutes without using a secret; 0 = never. Clamped to 0-1440.
+    pub auto_lock_minutes: u32,
+    /// Windows Hello / Touch ID before the keystore key is read.
+    pub require_presence: bool,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self {
+            unlock: "keystore".into(),
+            auto_lock_minutes: 10,
+            require_presence: false,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -105,6 +133,7 @@ impl Default for Config {
             terminal: TerminalSettings::default(),
             shell: ShellSettings::default(),
             updates: UpdateSettings::default(),
+            security: SecuritySettings::default(),
         }
     }
 }
@@ -191,6 +220,7 @@ impl Config {
         if t.font_family.trim().is_empty() {
             t.font_family = defaults.font_family;
         }
+        self.security.auto_lock_minutes = self.security.auto_lock_minutes.min(1440);
         if self
             .shell
             .startup_dir
@@ -350,6 +380,7 @@ mod tests {
         assert!(config.terminal.smooth_scroll);
         assert_eq!(config.appearance, Appearance::default());
         assert!(config.updates.auto);
+        assert_eq!(config.security, SecuritySettings::default());
     }
 
     #[test]

@@ -7,7 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-age = "0.12"
+age = "0.11"
 keyring = "4"
 # Same secrecy as age re-exports; the feature lets entries deserialise straight into SecretString.
 secrecy = { version = "0.10", features = ["serde"] }
@@ -15,6 +15,10 @@ zeroize = "1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Windows Hello (UserConsentVerifier); same major as the copy GPUI already pulls in.
+windows = { version = "0.62", features = ["Security_Credentials_UI", "Foundation"] }
 
 [lints]
 workspace = true

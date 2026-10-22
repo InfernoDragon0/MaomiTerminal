@@ -1,0 +1,25 @@
+[package]
+name = "maomi-ssh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+maomi-term.workspace = true
+# ring instead of the default aws-lc-rs: no cmake / nasm on Windows, and a plain ISC licence.
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
+tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros"] }
+async-channel.workspace = true
+zeroize = "1"
+# Same rand as russh; generates new keys.
+rand = { version = "0.10", features = ["thread_rng"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+
+[lints]
+workspace = true

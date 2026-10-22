@@ -1,9 +1,13 @@
 //! The app shell: windows, tabs, split panes, activity rail and sessions dock.
 
 mod drawer;
+mod hosts;
 mod pane;
 mod process;
 mod settings_page;
+mod snippets;
+mod ssh;
+mod ssh_keys;
 mod tree;
 mod workspace;
 
@@ -69,6 +73,8 @@ impl Default for LaunchOptions {
 }
 
 pub(crate) fn init(cx: &mut App) {
+    snippets::install(cx);
+    hosts::install(cx);
     let ctx = Some(KEY_CONTEXT);
     let primary = if cfg!(target_os = "macos") {
         "cmd"
