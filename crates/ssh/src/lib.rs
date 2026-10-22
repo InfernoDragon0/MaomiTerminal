@@ -13,6 +13,7 @@ mod bridge;
 mod forward;
 mod keys;
 mod known_hosts;
+mod sftp;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -30,6 +31,7 @@ pub use bridge::pty_size;
 pub use forward::Forward;
 pub use keys::{KeyInfo, KeyType, generate_key, import_key, key_info};
 pub use known_hosts::{KnownHost, KnownHosts, Trust};
+pub use sftp::{Progress, RemoteEntry, Sftp, SshHandle, base_name, join as join_remote};
 
 /// Terminal type announced to the server.
 const TERM: &str = "xterm-256color";
@@ -66,6 +68,8 @@ pub struct Shell {
     /// One per [`ConnectOptions::forwards`], in order: the port it listens on, or why it
     /// failed.
     pub forwards: Vec<Result<u16, String>>,
+    /// The connection, for SFTP.
+    pub handle: SshHandle,
 }
 
 pub enum AuthMethod {
@@ -156,6 +160,8 @@ pub enum SshError {
     Cancelled,
     #[error("ssh-agent: {0}")]
     Agent(String),
+    #[error("{0}")]
+    Files(String),
     #[error("private key: {0}")]
     Key(String),
     #[error("the private key is encrypted; enter its passphrase")]
@@ -172,9 +178,16 @@ pub async fn connect(
     options: ConnectOptions,
     prompts: async_channel::Sender<Prompt>,
 ) -> Result<Shell, SshError> {
+    on_runtime(open_shell(options, prompts)).await
+}
+
+/// Runs `work` on the SSH thread and waits for it from any executor.
+pub(crate) async fn on_runtime<T: Send + 'static>(
+    work: impl Future<Output = Result<T, SshError>> + Send + 'static,
+) -> Result<T, SshError> {
     let (done, result) = async_channel::bounded(1);
     runtime().spawn(async move {
-        _ = done.send(open_shell(options, prompts).await).await;
+        _ = done.send(work.await).await;
     });
     result.recv().await.unwrap_or(Err(SshError::Cancelled))
 }
@@ -267,6 +280,7 @@ async fn open_shell(
     channel.request_shell(true).await?;
     let (forwards, listeners) = forward::start(&target, &options.forwards, &remotes).await;
 
+    let handle = SshHandle(target.clone());
     let link = bridge::Link {
         target,
         jumps: hops,
@@ -282,7 +296,11 @@ async fn open_shell(
     };
     let session = PtySession::attach(io, options.session)
         .map_err(|err| SshError::Terminal(err.to_string()))?;
-    Ok(Shell { session, forwards })
+    Ok(Shell {
+        session,
+        forwards,
+        handle,
+    })
 }
 
 async fn authenticate(

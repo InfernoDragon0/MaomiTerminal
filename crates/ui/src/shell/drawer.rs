@@ -1,23 +1,36 @@
 //! A pane's file drawer: breadcrumb, filter and a virtual list of one folder (normally the
 //! shell's cwd). Rows drag into the terminal to insert their path; double-click opens a folder
 //! or inserts a file's path. The pane wires the events to the terminal.
+//!
+//! SSH panes get a remote drawer that lists the server over SFTP. Files dropped on it from
+//! the OS or a local drawer upload; remote rows dropped on a local drawer download. Remote
+//! rows have a context menu for downloading, renaming, permissions and deleting.
 
 use std::cmp::Ordering;
 use std::fs;
+use std::future::Future;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::time::Duration;
 
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, Window,
-    div, px, uniform_list,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, ExternalPaths,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    UniformListScrollHandle, Window, div, px, relative, uniform_list,
 };
+use maomi_ssh::{Progress, RemoteEntry, Sftp, SshError, SshHandle, join_remote};
 
+use super::ssh::{self, TextPrompt};
 use crate::{Palette, Theme};
 
 pub const DEFAULT_WIDTH: f32 = 220.;
@@ -26,10 +39,16 @@ pub const MAX_WIDTH: f32 = 520.;
 /// Larger folders show the first entries and a note; the list stays responsive.
 const MAX_ENTRIES: usize = 10_000;
 const ROW_HEIGHT: f32 = 24.;
+/// How often running transfers redraw their progress.
+const PROGRESS_TICK: Duration = Duration::from_millis(120);
 
 /// Drag payload of a drawer row; the terminal accepts it as a drop.
 #[derive(Debug, Clone)]
-pub struct DraggedPath(pub PathBuf);
+pub struct DraggedPath {
+    pub path: PathBuf,
+    /// Set for a remote row: dropping it on a local drawer downloads it.
+    pub sftp: Option<Sftp>,
+}
 
 pub enum DrawerEvent {
     /// Put this path at the terminal's cursor.
@@ -45,9 +64,30 @@ struct Entry {
     is_dir: bool,
     size: Option<u64>,
     hidden: bool,
+    /// Permission bits of a remote entry.
+    mode: Option<u32>,
+}
+
+/// Where the drawer lists files.
+enum Source {
+    Local,
+    /// None until the pane's connection is up and SFTP has started.
+    Remote {
+        sftp: Option<Sftp>,
+        home: Option<PathBuf>,
+    },
+}
+
+struct Transfer {
+    id: u64,
+    name: SharedString,
+    upload: bool,
+    progress: Arc<Progress>,
+    error: Option<SharedString>,
 }
 
 pub struct FileDrawer {
+    source: Source,
     dir: PathBuf,
     entries: Vec<Entry>,
     /// Indices into `entries` after the filter and hidden toggle.
@@ -62,18 +102,40 @@ pub struct FileDrawer {
     /// Bumped per listing; an older listing that finishes late is dropped.
     epoch: u64,
     scroll: UniformListScrollHandle,
+    transfers: Vec<Transfer>,
+    next_transfer: u64,
+    /// The progress redraw loop is running.
+    ticking: bool,
     _filter_events: Subscription,
 }
 
 impl FileDrawer {
     pub fn new(dir: PathBuf, follow: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut drawer = Self::empty(Source::Local, follow, window, cx);
+        drawer.set_dir(dir, cx);
+        drawer
+    }
+
+    /// A drawer for an SSH pane; it lists files once [`Self::set_remote`] connects it.
+    pub fn new_remote(follow: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let source = Source::Remote {
+            sftp: None,
+            home: None,
+        };
+        let mut drawer = Self::empty(source, follow, window, cx);
+        drawer.error = Some("Waiting for the connection…".into());
+        drawer
+    }
+
+    fn empty(source: Source, follow: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
         let filter_events = cx.subscribe(&filter, |drawer, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 drawer.refilter(cx);
             }
         });
-        let mut drawer = Self {
+        Self {
+            source,
             dir: PathBuf::new(),
             entries: Vec::new(),
             visible: Vec::new(),
@@ -85,10 +147,53 @@ impl FileDrawer {
             follow_blocked: false,
             epoch: 0,
             scroll: UniformListScrollHandle::new(),
+            transfers: Vec::new(),
+            next_transfer: 0,
+            ticking: false,
             _filter_events: filter_events,
-        };
-        drawer.set_dir(dir, cx);
-        drawer
+        }
+    }
+
+    /// Starts SFTP on the pane's (new) connection. The folder stays across reconnects;
+    /// the first connection opens the login folder.
+    pub fn set_remote(&mut self, handle: SshHandle, cx: &mut Context<Self>) {
+        self.error = Some("Starting SFTP…".into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let started = async {
+                let sftp = handle.sftp().await?;
+                let home = sftp.home().await.ok().map(PathBuf::from);
+                Ok::<_, SshError>((sftp, home))
+            }
+            .await;
+            _ = this.update(cx, |drawer, cx| match started {
+                Ok((sftp, home)) => {
+                    let dir = if drawer.dir.as_os_str().is_empty() {
+                        home.clone().unwrap_or_else(|| PathBuf::from("/"))
+                    } else {
+                        drawer.dir.clone()
+                    };
+                    drawer.source = Source::Remote {
+                        sftp: Some(sftp),
+                        home,
+                    };
+                    drawer.error = None;
+                    drawer.set_dir(dir, cx);
+                }
+                Err(err) => {
+                    drawer.error = Some(format!("SFTP: {err}").into());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn sftp(&self) -> Option<&Sftp> {
+        match &self.source {
+            Source::Remote { sftp, .. } => sftp.as_ref(),
+            Source::Local => None,
+        }
     }
 
     pub fn follow(&self) -> bool {
@@ -113,13 +218,30 @@ impl FileDrawer {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
+        let remote = match &self.source {
+            Source::Local => None,
+            Source::Remote {
+                sftp: Some(sftp), ..
+            } => Some(sftp.clone()),
+            Source::Remote { sftp: None, .. } => return,
+        };
         self.epoch += 1;
         let (epoch, dir) = (self.epoch, self.dir.clone());
         cx.spawn(async move |this, cx| {
-            let listing = cx
-                .background_executor()
-                .spawn(async move { list_dir(&dir) })
-                .await;
+            let listing = match remote {
+                None => {
+                    cx.background_executor()
+                        .spawn(async move { list_dir(&dir).map_err(|e| e.to_string()) })
+                        .await
+                }
+                Some(sftp) => {
+                    let dir = remote_path(&dir);
+                    sftp.list(&dir)
+                        .await
+                        .map(|entries| remote_listing(&dir, entries))
+                        .map_err(|e| e.to_string())
+                }
+            };
             _ = this.update(cx, |drawer, cx| {
                 if drawer.epoch != epoch {
                     return;
@@ -133,7 +255,7 @@ impl FileDrawer {
                     Err(err) => {
                         drawer.entries.clear();
                         drawer.truncated = false;
-                        drawer.error = Some(err.to_string().into());
+                        drawer.error = Some(err.into());
                     }
                 }
                 drawer.refilter(cx);
@@ -171,11 +293,288 @@ impl FileDrawer {
         }
     }
 
+    /// A drawer row or pane dropped here: remote rows download into a local drawer, local
+    /// rows upload into a remote one.
+    fn drop_path(&mut self, dragged: &DraggedPath, cx: &mut Context<Self>) {
+        match (self.sftp().cloned(), &dragged.sftp) {
+            (Some(_), None) => self.upload(vec![dragged.path.clone()], cx),
+            (None, Some(sftp)) if matches!(self.source, Source::Local) => {
+                self.download(sftp.clone(), dragged.path.clone(), self.dir.clone(), cx)
+            }
+            _ => {}
+        }
+    }
+
+    /// Uploads local files and folders into the folder on show.
+    fn upload(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp().cloned() else {
+            return;
+        };
+        let dir = remote_path(&self.dir);
+        for path in paths {
+            let name = file_name(&path);
+            let (sftp, dir) = (sftp.clone(), dir.clone());
+            self.start_transfer(name, true, cx, move |progress| async move {
+                sftp.upload(path, &dir, progress).await
+            });
+        }
+    }
+
+    fn download(
+        &mut self,
+        sftp: Sftp,
+        remote: PathBuf,
+        local_dir: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let name = file_name(&remote);
+        let remote = remote_path(&remote);
+        self.start_transfer(name, false, cx, move |progress| async move {
+            sftp.download(&remote, local_dir, progress).await
+        });
+    }
+
+    fn start_transfer<F>(
+        &mut self,
+        name: String,
+        upload: bool,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(Arc<Progress>) -> F,
+    ) where
+        F: Future<Output = Result<(), SshError>> + 'static,
+    {
+        let progress = Arc::new(Progress::default());
+        let id = self.next_transfer;
+        self.next_transfer += 1;
+        self.transfers.push(Transfer {
+            id,
+            name: name.into(),
+            upload,
+            progress: progress.clone(),
+            error: None,
+        });
+        let work = work(progress);
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            _ = this.update(cx, |drawer, cx| {
+                match result {
+                    Ok(()) | Err(SshError::Cancelled) => drawer.transfers.retain(|t| t.id != id),
+                    Err(err) => {
+                        if let Some(transfer) = drawer.transfers.iter_mut().find(|t| t.id == id) {
+                            transfer.error = Some(err.to_string().into());
+                        }
+                    }
+                }
+                // The folder on show may have new files.
+                drawer.reload(cx);
+            });
+        })
+        .detach();
+        self.tick(cx);
+    }
+
+    /// Redraws while transfers run.
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        if self.ticking {
+            return;
+        }
+        self.ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(PROGRESS_TICK).await;
+                let running = this
+                    .update(cx, |drawer, cx| {
+                        cx.notify();
+                        let running = drawer.transfers.iter().any(|t| t.error.is_none());
+                        drawer.ticking = running;
+                        running
+                    })
+                    .unwrap_or(false);
+                if !running {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Runs a change on the server, then refreshes; a failure shows as a notification.
+    fn change(
+        &mut self,
+        change: impl Future<Output = Result<(), SshError>> + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |this, cx| {
+            let result = change.await;
+            _ = this.update_in(cx, |drawer, window, cx| {
+                if let Err(err) = result {
+                    window.push_notification(Notification::error(err.to_string()), cx);
+                }
+                drawer.reload(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn download_to(&mut self, entry: &Entry, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp().cloned() else {
+            return;
+        };
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Download here".into()),
+        });
+        let remote = entry.path.clone();
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(dir) = paths.into_iter().next() else {
+                return;
+            };
+            _ = this.update(cx, |drawer, cx| drawer.download(sftp, remote, dir, cx));
+        })
+        .detach();
+    }
+
+    fn rename(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp().cloned() else {
+            return;
+        };
+        let (from, dir) = (remote_path(&entry.path), remote_path(&self.dir));
+        let this = cx.entity().downgrade();
+        ssh::ask_text(
+            TextPrompt {
+                title: format!("Rename {}", entry.name).into(),
+                label: "New name",
+                sub: "".into(),
+                initial: entry.name.to_string(),
+                ok_label: "Rename",
+            },
+            window,
+            cx,
+            move |name, window, cx| {
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    return;
+                }
+                let to = if name.starts_with('/') {
+                    name
+                } else {
+                    join_remote(&dir, &name)
+                };
+                _ = this.update(cx, |drawer, cx| {
+                    drawer.change(async move { sftp.rename(&from, &to).await }, window, cx)
+                });
+            },
+        );
+    }
+
+    fn permissions(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp().cloned() else {
+            return;
+        };
+        let path = remote_path(&entry.path);
+        let mode = entry
+            .mode
+            .unwrap_or(if entry.is_dir { 0o755 } else { 0o644 });
+        let this = cx.entity().downgrade();
+        ssh::ask_text(
+            TextPrompt {
+                title: format!("Permissions of {}", entry.name).into(),
+                label: "Mode (octal)",
+                sub: format!(
+                    "Now {} ({mode:o}). For example 644 for files, 755 for folders and scripts.",
+                    mode_string(mode)
+                )
+                .into(),
+                initial: format!("{mode:o}"),
+                ok_label: "Apply",
+            },
+            window,
+            cx,
+            move |text, window, cx| {
+                let Some(mode) = u32::from_str_radix(text.trim(), 8)
+                    .ok()
+                    .filter(|m| *m <= 0o7777)
+                else {
+                    window.push_notification(
+                        Notification::error(format!("{text:?} is not an octal mode like 644")),
+                        cx,
+                    );
+                    return;
+                };
+                _ = this.update(cx, |drawer, cx| {
+                    drawer.change(async move { sftp.set_mode(&path, mode).await }, window, cx)
+                });
+            },
+        );
+    }
+
+    fn delete(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp().cloned() else {
+            return;
+        };
+        let path = remote_path(&entry.path);
+        let what = if entry.is_dir {
+            "This deletes the folder and everything in it on the server. It cannot be undone."
+        } else {
+            "This deletes the file on the server. It cannot be undone."
+        };
+        let this = cx.entity().downgrade();
+        ssh::confirm(
+            format!("Delete {}?", entry.name),
+            what,
+            "Delete",
+            window,
+            cx,
+            move |window, cx| {
+                _ = this.update(cx, |drawer, cx| {
+                    drawer.change(async move { sftp.remove(&path).await }, window, cx)
+                });
+            },
+        );
+    }
+
+    fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp().cloned() else {
+            return;
+        };
+        let dir = remote_path(&self.dir);
+        let this = cx.entity().downgrade();
+        ssh::ask_text(
+            TextPrompt {
+                title: "New folder".into(),
+                label: "Name",
+                sub: "".into(),
+                initial: String::new(),
+                ok_label: "Create",
+            },
+            window,
+            cx,
+            move |name, window, cx| {
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    return;
+                }
+                let path = join_remote(&dir, &name);
+                _ = this.update(cx, |drawer, cx| {
+                    drawer.change(async move { sftp.create_dir(&path).await }, window, cx)
+                });
+            },
+        );
+    }
+
     /// Rows `range` of the list: `..` first (when there is a parent), then the visible entries.
     fn render_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let p = Theme::current(cx).palette();
         let parent = self.dir.parent().map(Path::to_path_buf);
         let offset = usize::from(parent.is_some());
+        let sftp = self.sftp().cloned();
+        let this = cx.entity().downgrade();
         range
             .map(|ix| {
                 if ix < offset {
@@ -209,10 +608,14 @@ impl FileDrawer {
                 } else {
                     (IconName::File, p.muted.to_hsla())
                 };
-                let drag = DraggedPath(entry.path.clone());
+                let drag = DraggedPath {
+                    path: entry.path.clone(),
+                    sftp: sftp.clone(),
+                };
                 let name = entry.name.clone();
                 let label = entry.name.clone();
-                row_base(ix, p)
+                let menu_entry = entry.clone();
+                let row = row_base(ix, p)
                     .when(entry.hidden, |d| d.opacity(0.6))
                     .on_click(cx.listener(
                         move |drawer, event: &gpui_kit::ClickEvent, window, cx| {
@@ -243,14 +646,41 @@ impl FileDrawer {
                                 .text_color(p.muted.to_hsla())
                                 .child(size),
                         )
-                    })
-                    .into_any_element()
+                    });
+                if sftp.is_none() {
+                    return row.into_any_element();
+                }
+                let this = this.clone();
+                row.context_menu(move |menu, _, _| {
+                    let item = |label: &'static str,
+                                act: fn(
+                        &mut FileDrawer,
+                        &Entry,
+                        &mut Window,
+                        &mut Context<FileDrawer>,
+                    )| {
+                        let (this, entry) = (this.clone(), menu_entry.clone());
+                        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                            _ = this.update(cx, |drawer, cx| act(drawer, &entry, window, cx));
+                        })
+                    };
+                    menu.item(item("Download to…", FileDrawer::download_to))
+                        .item(item("Rename…", FileDrawer::rename))
+                        .item(item("Permissions…", FileDrawer::permissions))
+                        .separator()
+                        .item(item("Delete…", FileDrawer::delete))
+                })
+                .into_any_element()
             })
             .collect()
     }
 
     fn render_crumb(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut parts = crumbs(&self.dir);
+        let home = match &self.source {
+            Source::Local => std::env::home_dir(),
+            Source::Remote { home, .. } => home.clone(),
+        };
+        let mut parts = crumbs(&self.dir, home.as_deref());
         let last = parts.len().saturating_sub(1);
         let segments = parts.drain(..).enumerate().map(|(i, (label, path))| {
             let is_last = i == last;
@@ -295,6 +725,7 @@ impl FileDrawer {
         } else {
             "Show hidden files"
         };
+        let remote = matches!(self.source, Source::Remote { .. });
 
         div()
             .flex()
@@ -346,12 +777,139 @@ impl FileDrawer {
                     }))
                     .child(Icon::new(gpui_kit::assets::IconName::Link).size(px(14.))),
             )
-            .child(
-                toggle_button("drawer-pick", false, false, p)
-                    .tooltip(|window, cx| Tooltip::new("Go to a folder…").build(window, cx))
-                    .on_click(cx.listener(|drawer, _, window, cx| drawer.pick_folder(window, cx)))
-                    .child(Icon::new(gpui_kit::assets::IconName::FolderSearch).size(px(14.))),
-            )
+            .map(|d| {
+                if remote {
+                    d.child(
+                        toggle_button("drawer-new-folder", false, false, p)
+                            .tooltip(|window, cx| Tooltip::new("New folder…").build(window, cx))
+                            .on_click(
+                                cx.listener(|drawer, _, window, cx| drawer.new_folder(window, cx)),
+                            )
+                            .child(Icon::new(gpui_kit::assets::IconName::FolderPlus).size(px(14.))),
+                    )
+                    .child(
+                        toggle_button("drawer-refresh", false, false, p)
+                            .tooltip(|window, cx| Tooltip::new("Refresh").build(window, cx))
+                            .on_click(cx.listener(|drawer, _, _, cx| drawer.reload(cx)))
+                            .child(Icon::new(gpui_kit::assets::IconName::RefreshCw).size(px(14.))),
+                    )
+                } else {
+                    d.child(
+                        toggle_button("drawer-pick", false, false, p)
+                            .tooltip(|window, cx| Tooltip::new("Go to a folder…").build(window, cx))
+                            .on_click(
+                                cx.listener(|drawer, _, window, cx| drawer.pick_folder(window, cx)),
+                            )
+                            .child(
+                                Icon::new(gpui_kit::assets::IconName::FolderSearch).size(px(14.)),
+                            ),
+                    )
+                }
+            })
+    }
+
+    /// Running and failed transfers, newest last.
+    fn render_transfers(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(px(6.))
+            .px(px(10.))
+            .py(px(8.))
+            .border_t_1()
+            .border_color(p.line.to_hsla())
+            .children(self.transfers.iter().map(|transfer| {
+                let done = transfer.progress.done.load(AtomicOrdering::Relaxed);
+                let total = transfer.progress.total.load(AtomicOrdering::Relaxed);
+                let fraction = if total == 0 {
+                    0.
+                } else {
+                    (done as f64 / total as f64).min(1.) as f32
+                };
+                let (id, progress) = (transfer.id, transfer.progress.clone());
+                let failed = transfer.error.is_some();
+                let status: SharedString = match &transfer.error {
+                    Some(error) => error.clone(),
+                    None => format!("{}%", (fraction * 100.).round()).into(),
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                Icon::new(if transfer.upload {
+                                    gpui_kit::assets::IconName::Upload
+                                } else {
+                                    gpui_kit::assets::IconName::Download
+                                })
+                                .size(px(13.))
+                                .text_color(p.muted.to_hsla()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(p.fg.to_hsla())
+                                    .child(transfer.name.clone()),
+                            )
+                            .when(!failed, |d| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(11.))
+                                        .text_color(p.muted.to_hsla())
+                                        .child(status.clone()),
+                                )
+                            })
+                            .child(
+                                toggle_button_id(("transfer-close", id as usize), p)
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(if failed { "Dismiss" } else { "Cancel" })
+                                            .build(window, cx)
+                                    })
+                                    .on_click(cx.listener(move |drawer, _, _, cx| {
+                                        progress.cancel.store(true, AtomicOrdering::Relaxed);
+                                        if failed {
+                                            drawer.transfers.retain(|t| t.id != id);
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(Icon::new(IconName::Close).size(px(12.))),
+                            ),
+                    )
+                    .map(|d| {
+                        if failed {
+                            d.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(p.err.to_hsla())
+                                    .child(status),
+                            )
+                        } else {
+                            d.child(
+                                div()
+                                    .h(px(3.))
+                                    .rounded(px(2.))
+                                    .bg(p.surface_3.to_hsla())
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(relative(fraction))
+                                            .rounded(px(2.))
+                                            .bg(p.accent.to_hsla()),
+                                    ),
+                            )
+                        }
+                    })
+            }))
     }
 
     /// Opens the system folder picker and navigates to the chosen folder.
@@ -386,7 +944,10 @@ impl Render for FileDrawer {
             (None, true) => Some(format!("Showing the first {MAX_ENTRIES} entries").into()),
             _ => None,
         };
+        let accent_soft = p.accent_soft.to_hsla();
+        let remote = self.sftp().is_some();
         div()
+            .id("drawer")
             .flex()
             .flex_col()
             .size_full()
@@ -395,6 +956,17 @@ impl Render for FileDrawer {
             .text_size(px(12.))
             .text_color(p.fg.to_hsla())
             .bg(p.surface_2.to_hsla())
+            // Uploads: files from the OS, or rows of a local drawer.
+            .when(remote, |d| {
+                d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(accent_soft))
+                    .on_drop(cx.listener(|drawer, paths: &ExternalPaths, _, cx| {
+                        drawer.upload(paths.paths().to_vec(), cx)
+                    }))
+            })
+            .drag_over::<DraggedPath>(move |s, _, _, _| s.bg(accent_soft))
+            .on_drop(
+                cx.listener(|drawer, dragged: &DraggedPath, _, cx| drawer.drop_path(dragged, cx)),
+            )
             .child(self.render_crumb(p, cx))
             .child(
                 div()
@@ -426,6 +998,9 @@ impl Render for FileDrawer {
                 .px(px(4.))
                 .pb(px(4.)),
             )
+            .when(!self.transfers.is_empty(), |d| {
+                d.child(self.render_transfers(p, cx))
+            })
     }
 }
 
@@ -495,12 +1070,26 @@ fn toggle_button(
         })
 }
 
-/// Breadcrumb segments, root first; paths under the home folder start at `~`.
-fn crumbs(dir: &Path) -> Vec<(SharedString, PathBuf)> {
-    let home = std::env::home_dir();
+/// A small icon button with a numbered id, for per-row buttons.
+fn toggle_button_id(id: (&'static str, usize), p: &Palette) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let (hover, emph) = (p.surface_3.to_hsla(), p.fg_emph.to_hsla());
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(18.))
+        .rounded(px(5.))
+        .text_color(p.muted.to_hsla())
+        .hover(move |s| s.bg(hover).text_color(emph))
+}
+
+/// Breadcrumb segments, root first; paths under `home` start at `~`.
+fn crumbs(dir: &Path, home: Option<&Path>) -> Vec<(SharedString, PathBuf)> {
     let mut parts: Vec<(SharedString, PathBuf)> = Vec::new();
     for ancestor in dir.ancestors() {
-        if home.as_deref() == Some(ancestor) {
+        if home == Some(ancestor) {
             parts.push(("~".into(), ancestor.to_path_buf()));
             break;
         }
@@ -512,6 +1101,59 @@ fn crumbs(dir: &Path) -> Vec<(SharedString, PathBuf)> {
     }
     parts.reverse();
     parts
+}
+
+/// A remote path kept in a `PathBuf`, back as the POSIX string SFTP wants.
+fn remote_path(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    if path.is_empty() { "/".into() } else { path }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// `rwxr-xr-x` for a mode.
+fn mode_string(mode: u32) -> String {
+    (0..9)
+        .map(|bit| {
+            if mode & (0o400 >> bit) == 0 {
+                '-'
+            } else {
+                ['r', 'w', 'x'][bit % 3]
+            }
+        })
+        .collect()
+}
+
+/// A remote listing as drawer entries, sorted and capped like a local one.
+fn remote_listing(dir: &str, items: Vec<RemoteEntry>) -> (Vec<Entry>, bool) {
+    let truncated = items.len() > MAX_ENTRIES;
+    let mut entries: Vec<Entry> = items
+        .into_iter()
+        .take(MAX_ENTRIES)
+        .map(|item| Entry {
+            path: PathBuf::from(join_remote(dir, &item.name)),
+            hidden: item.name.starts_with('.'),
+            size: (!item.is_dir).then_some(item.size),
+            is_dir: item.is_dir,
+            mode: item.mode,
+            name: item.name.into(),
+        })
+        .collect();
+    sort_entries(&mut entries);
+    (entries, truncated)
+}
+
+/// Folders first, then by name (case-insensitive).
+fn sort_entries(entries: &mut [Entry]) {
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
 }
 
 /// The folder's entries, folders first then by name (case-insensitive), at most
@@ -539,13 +1181,10 @@ fn list_dir(dir: &Path) -> std::io::Result<(Vec<Entry>, bool)> {
             path,
             is_dir,
             hidden,
+            mode: None,
         });
     }
-    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
+    sort_entries(&mut entries);
     Ok((entries, truncated))
 }
 
@@ -608,7 +1247,42 @@ mod tests {
     #[test]
     fn crumbs_end_at_the_folder() {
         let dir = std::env::temp_dir();
-        let parts = crumbs(&dir);
+        let parts = crumbs(&dir, std::env::home_dir().as_deref());
         assert_eq!(parts.last().unwrap().1, dir);
+    }
+
+    #[test]
+    fn remote_paths_list_and_crumb_with_slashes() {
+        let (entries, truncated) = remote_listing(
+            "/home/kit",
+            vec![
+                RemoteEntry {
+                    name: "notes.txt".into(),
+                    is_dir: false,
+                    size: 5,
+                    mode: Some(0o644),
+                },
+                RemoteEntry {
+                    name: ".config".into(),
+                    is_dir: true,
+                    size: 0,
+                    mode: Some(0o700),
+                },
+            ],
+        );
+        assert!(!truncated);
+        assert_eq!(entries[0].name.as_ref(), ".config");
+        assert!(entries[0].hidden);
+        assert_eq!(remote_path(&entries[1].path), "/home/kit/notes.txt");
+        let parts = crumbs(Path::new("/home/kit/src"), Some(Path::new("/home/kit")));
+        let labels: Vec<_> = parts.iter().map(|(l, _)| l.to_string()).collect();
+        assert_eq!(labels, ["~", "src"]);
+        assert_eq!(remote_path(&parts[0].1), "/home/kit");
+    }
+
+    #[test]
+    fn modes_read_like_ls() {
+        assert_eq!(mode_string(0o755), "rwxr-xr-x");
+        assert_eq!(mode_string(0o640), "rw-r-----");
     }
 }

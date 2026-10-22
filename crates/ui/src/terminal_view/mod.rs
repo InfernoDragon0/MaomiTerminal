@@ -65,6 +65,8 @@ pub enum TerminalViewEvent {
     Restarted,
     /// A folder path in the output was Ctrl+clicked.
     OpenFolder(PathBuf),
+    /// A remote pane's connection opened; [`TerminalView::ssh_handle`] has it.
+    Connected,
 }
 
 /// A remote pane's connection state, shown in the bottom banner.
@@ -86,6 +88,8 @@ pub struct TerminalView {
     connection: Option<Connection>,
     /// Set for remote panes: Enter reconnects instead of starting a local shell.
     reconnect: Option<Reconnect>,
+    /// The open SSH connection of a remote pane, for SFTP.
+    ssh: Option<maomi_ssh::SshHandle>,
     focus_handle: FocusHandle,
     font: TerminalFont,
     cursor_on: bool,
@@ -137,6 +141,7 @@ impl TerminalView {
             exited: None,
             connection: None,
             reconnect: None,
+            ssh: None,
             focus_handle,
             font: TerminalFont::default(),
             cursor_on: true,
@@ -182,6 +187,7 @@ impl TerminalView {
         self.session = session;
         self.exited = None;
         self.connection = None;
+        self.ssh = None;
         self.query_theme = None;
         self.pane = Rc::default();
         cx.emit(TerminalViewEvent::Restarted);
@@ -191,6 +197,17 @@ impl TerminalView {
     pub fn set_connection(&mut self, connection: Option<Connection>, cx: &mut Context<Self>) {
         self.connection = connection;
         cx.notify();
+    }
+
+    /// Records the connection behind a remote session just shown with
+    /// [`Self::replace_session`].
+    pub fn set_ssh(&mut self, handle: maomi_ssh::SshHandle, cx: &mut Context<Self>) {
+        self.ssh = Some(handle);
+        cx.emit(TerminalViewEvent::Connected);
+    }
+
+    pub fn ssh_handle(&self) -> Option<&maomi_ssh::SshHandle> {
+        self.ssh.as_ref()
     }
 
     pub fn set_reconnect(&mut self, reconnect: Reconnect) {

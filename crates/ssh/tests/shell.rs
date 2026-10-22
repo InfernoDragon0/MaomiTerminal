@@ -1,7 +1,12 @@
 //! End to end against an in-process russh server: host-key prompt, password and key login,
 //! shell output into the terminal grid, input, resize, the exit code, a jump host, the
-//! three kinds of port forward, and ssh-agent login and forwarding.
+//! three kinds of port forward, ssh-agent login and forwarding, and SFTP.
 
+#[path = "support/memfs.rs"]
+mod memfs;
+
+use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -35,12 +40,19 @@ struct TestServer {
     client_key: PublicKey,
     /// This connection's shell; data on tunnel channels is not echoed.
     shell: Option<ChannelId>,
+    /// Session channels not yet claimed by a subsystem.
+    channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
+    /// The SFTP subsystem's files.
+    files: memfs::Tree,
 }
 
 impl server::Server for TestServer {
     type Handler = Self;
     fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self {
-        self.clone()
+        Self {
+            channels: Arc::default(),
+            ..self.clone()
+        }
     }
 }
 
@@ -67,11 +79,33 @@ impl server::Handler for TestServer {
 
     async fn channel_open_session(
         &mut self,
-        _channel: Channel<Msg>,
+        channel: Channel<Msg>,
         reply: server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.channels.lock().unwrap().insert(channel.id(), channel);
         reply.accept().await;
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let claimed = self.channels.lock().unwrap().remove(&channel);
+        match claimed {
+            Some(stream) if name == "sftp" => {
+                session.channel_success(channel)?;
+                russh_sftp::server::run(
+                    stream.into_stream(),
+                    memfs::MemFs::new(self.files.clone()),
+                )
+                .await;
+            }
+            _ => session.channel_failure(channel)?,
+        }
         Ok(())
     }
 
@@ -204,6 +238,12 @@ impl server::Handler for TestServer {
 
 /// Starts the server on a free port; returns the port and what it saw.
 async fn start_server() -> (u16, Arc<Mutex<Seen>>) {
+    let (port, seen, _) = start_server_with_files().await;
+    (port, seen)
+}
+
+/// [`start_server`] and the SFTP files.
+async fn start_server_with_files() -> (u16, Arc<Mutex<Seen>>, memfs::Tree) {
     let config = Arc::new(server::Config {
         keys: vec![PrivateKey::from_openssh(HOST_KEY).unwrap()],
         auth_rejection_time: Duration::from_millis(10),
@@ -215,13 +255,16 @@ async fn start_server() -> (u16, Arc<Mutex<Seen>>) {
         seen: seen.clone(),
         client_key: PublicKey::from_openssh(CLIENT_PUB).unwrap(),
         shell: None,
+        channels: Arc::default(),
+        files: memfs::tree(),
     };
+    let files = server.files.clone();
     let socket = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = socket.local_addr().unwrap().port();
     tokio::spawn(async move {
         _ = server.run_on_socket(config, &socket).await;
     });
-    (port, seen)
+    (port, seen, files)
 }
 
 fn login(port: u16, auth: Vec<AuthMethod>) -> Login {
@@ -613,4 +656,124 @@ async fn agent_login_and_forwarding() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(seen.lock().unwrap().agent_keys, Some(1));
+}
+
+/// A scratch folder under the build temp folder.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("maomi-sftp-{name}-{}", std::process::id()));
+    _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sftp_lists_uploads_downloads_renames_and_deletes() {
+    use maomi_ssh::Progress;
+    use memfs::{HOME, Node};
+
+    let (port, _, files) = start_server_with_files().await;
+    let (prompts, _) = answer_prompts(Some("pw"), Vec::new());
+    let shell = connect(options(port, vec![AuthMethod::Password(None)]), prompts)
+        .await
+        .unwrap();
+    let sftp = shell.handle.sftp().await.unwrap();
+    assert_eq!(sftp.home().await.unwrap(), HOME);
+
+    // A folder with a file bigger than one chunk, and a nested folder.
+    let local = scratch("up").join("project");
+    std::fs::create_dir_all(local.join("src")).unwrap();
+    let big: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(local.join("big.bin"), &big).unwrap();
+    std::fs::write(local.join("src").join("main.rs"), b"fn main() {}").unwrap();
+
+    let progress = Arc::new(Progress::default());
+    sftp.upload(local.clone(), HOME, progress.clone())
+        .await
+        .unwrap();
+    let total = progress.total.load(Ordering::Relaxed);
+    assert_eq!(total, 200_000 + 12);
+    assert_eq!(progress.done.load(Ordering::Relaxed), total);
+    assert_eq!(
+        files.lock().unwrap().get("/home/kit/project/big.bin"),
+        Some(&Node::File {
+            data: big.clone(),
+            mode: 0o644
+        })
+    );
+
+    let mut names: Vec<_> = sftp
+        .list(&format!("{HOME}/project"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.name, e.is_dir, e.size))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            ("big.bin".to_owned(), false, 200_000),
+            ("src".to_owned(), true, 0)
+        ]
+    );
+
+    sftp.set_mode("/home/kit/project/big.bin", 0o600)
+        .await
+        .unwrap();
+    let listed = sftp.list("/home/kit/project").await.unwrap();
+    let big_entry = listed.iter().find(|e| e.name == "big.bin").unwrap();
+    assert_eq!(big_entry.mode, Some(0o600));
+
+    sftp.rename("/home/kit/project", "/home/kit/renamed")
+        .await
+        .unwrap();
+    sftp.create_dir("/home/kit/renamed/empty").await.unwrap();
+
+    let down = scratch("down");
+    sftp.download(
+        "/home/kit/renamed",
+        down.clone(),
+        Arc::new(Progress::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read(down.join("renamed").join("big.bin")).unwrap(),
+        big
+    );
+    assert_eq!(
+        std::fs::read(down.join("renamed").join("src").join("main.rs")).unwrap(),
+        b"fn main() {}"
+    );
+    assert!(down.join("renamed").join("empty").is_dir());
+
+    sftp.remove("/home/kit/renamed").await.unwrap();
+    assert!(
+        files
+            .lock()
+            .unwrap()
+            .keys()
+            .all(|p| !p.starts_with("/home/kit/renamed")),
+        "folder left behind"
+    );
+    let err = sftp.list("/home/kit/renamed").await.unwrap_err();
+    assert!(matches!(err, SshError::Files(_)), "{err}");
+
+    // A cancelled download leaves no partial file.
+    let cancelled = Arc::new(Progress::default());
+    cancelled.cancel.store(true, Ordering::Relaxed);
+    let local_file = scratch("one").join("big.bin");
+    sftp.upload(local.join("big.bin"), HOME, Arc::new(Progress::default()))
+        .await
+        .unwrap();
+    let err = sftp
+        .download(
+            "/home/kit/big.bin",
+            local_file.parent().unwrap().to_path_buf(),
+            cancelled,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SshError::Cancelled), "{err}");
+    assert!(!local_file.exists());
 }

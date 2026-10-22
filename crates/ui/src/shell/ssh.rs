@@ -203,6 +203,7 @@ fn start(
         let result = maomi_ssh::connect(options, prompts).await;
         cx.update(|cx| {
             let result = result.map(|shell| {
+                let ssh_handle = shell.handle.clone();
                 let failed: Vec<String> = target
                     .forwards
                     .iter()
@@ -227,7 +228,7 @@ fn start(
                     .zip(shell.forwards)
                     .collect();
                 hosts::set_forwards(&host_id, states, cx);
-                shell.session
+                (shell.session, ssh_handle)
             });
             let status = match &result {
                 Ok(_) => HostStatus::Connected,
@@ -235,7 +236,10 @@ fn start(
             };
             hosts::set_status(&host_id, status, cx);
             _ = view.update(cx, |view, cx| match result {
-                Ok(session) => view.replace_session(session, cx),
+                Ok((session, ssh_handle)) => {
+                    view.replace_session(session, cx);
+                    view.set_ssh(ssh_handle, cx);
+                }
                 Err(SshError::Cancelled) => {
                     view.set_connection(Some(Connection::Failed("Cancelled".into())), cx);
                 }
@@ -457,6 +461,67 @@ fn save_password(host: &Host, password: String, window: &mut Window, cx: &mut Ap
             None => {}
         }
     });
+}
+
+/// The texts of an [`ask_text`] dialog.
+pub(crate) struct TextPrompt {
+    pub title: SharedString,
+    pub label: &'static str,
+    pub sub: SharedString,
+    pub initial: String,
+    pub ok_label: &'static str,
+}
+
+/// A dialog with one text field; `on_ok` gets what was typed.
+pub(crate) fn ask_text(
+    prompt: TextPrompt,
+    window: &mut Window,
+    cx: &mut App,
+    on_ok: impl FnOnce(String, &mut Window, &mut App) + 'static,
+) {
+    let input = cx.new(|cx| InputState::new(window, cx).default_value(prompt.initial));
+    open(
+        PromptDialog {
+            title: prompt.title,
+            sub: prompt.sub,
+            mono: None,
+            fields: vec![(prompt.label.into(), input)],
+            save: None,
+            ok_label: prompt.ok_label.into(),
+            danger: false,
+            answer: Some(Box::new(move |answer, window, cx| {
+                let text = answer.values.into_iter().next().unwrap_or_default();
+                on_ok(text, window, cx);
+            })),
+        },
+        window,
+        cx,
+    );
+}
+
+/// Asks before something that cannot be undone; Cancel is the primary button.
+pub(crate) fn confirm(
+    title: impl Into<SharedString>,
+    sub: impl Into<SharedString>,
+    ok_label: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+    on_ok: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+    open(
+        PromptDialog {
+            title: title.into(),
+            sub: sub.into(),
+            mono: None,
+            fields: Vec::new(),
+            save: None,
+            ok_label: ok_label.into(),
+            danger: true,
+            answer: Some(Box::new(move |_, window, cx| on_ok(window, cx))),
+        },
+        window,
+        cx,
+    );
 }
 
 fn masked(

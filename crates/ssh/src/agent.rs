@@ -12,7 +12,7 @@ use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::{Algorithm, HashAlg};
 
-use crate::{Client, SshError, runtime};
+use crate::{Client, SshError, on_runtime};
 
 type Stream = Box<dyn AgentStream + Send + Unpin>;
 type Agent = AgentClient<Stream>;
@@ -39,26 +39,19 @@ pub struct AgentKey {
 
 /// The keys in the running agent. Fails when no agent can be reached.
 pub async fn agent_keys() -> Result<Vec<AgentKey>, SshError> {
-    let (done, result) = async_channel::bounded(1);
-    runtime().spawn(async move {
-        let keys = async {
-            let mut agent = connect().await?;
-            let identities = agent.request_identities().await?;
-            Ok::<_, russh::keys::Error>(
-                identities
-                    .iter()
-                    .map(|identity| AgentKey {
-                        algorithm: identity.public_key().algorithm().as_str().to_owned(),
-                        comment: identity.comment().to_owned(),
-                    })
-                    .collect(),
-            )
-        }
-        .await
-        .map_err(|err| SshError::Agent(err.to_string()));
-        _ = done.send(keys).await;
-    });
-    result.recv().await.unwrap_or(Err(SshError::Cancelled))
+    on_runtime(async {
+        let identities = async { connect().await?.request_identities().await }
+            .await
+            .map_err(|err| SshError::Agent(err.to_string()))?;
+        Ok(identities
+            .iter()
+            .map(|identity| AgentKey {
+                algorithm: identity.public_key().algorithm().as_str().to_owned(),
+                comment: identity.comment().to_owned(),
+            })
+            .collect())
+    })
+    .await
 }
 
 /// Tries every key in the agent. No agent, or none of its keys accepted, gives false.
