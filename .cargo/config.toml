@@ -1,3 +1,11 @@
 # Statically link the MSVC C runtime so the release exe runs without the VC++ Redistributable.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# rustc, the linker and the tests write temp files under the repo instead of the system temp
+# folder: linking the workspace's debug binaries in parallel briefly needs several GB, too much
+# for a small C: drive. The folder is kept in git so it exists in every clone.
+[env]
+TMP = { value = ".build-tmp", relative = true, force = true }
+TEMP = { value = ".build-tmp", relative = true, force = true }
+TMPDIR = { value = ".build-tmp", relative = true, force = true }

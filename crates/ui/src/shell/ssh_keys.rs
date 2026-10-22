@@ -1,9 +1,11 @@
 //! Settings > SSH keys (private keys stored in the vault: generate, import, copy the public
-//! key, delete) and Settings > Known hosts (trusted host keys).
+//! key, delete; the ssh-agent switch) and Settings > Known hosts (trusted host keys).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -18,7 +20,7 @@ use maomi_vault::{Entry, EntryKind, ExposeSecret as _, SecretString};
 use super::hosts::{self, HostStore};
 use super::settings_page::{row, section};
 use super::ssh;
-use crate::{Palette, TERMINAL_FAMILY, Theme, vault};
+use crate::{Palette, TERMINAL_FAMILY, Theme, settings, vault};
 
 /// One stored key, described once per vault change (parsing RSA keys every frame is wasteful).
 struct KeyRow {
@@ -32,6 +34,9 @@ pub struct SshKeysSection {
     /// None while the vault is locked.
     keys: Option<Vec<KeyRow>>,
     known: Vec<KnownHost>,
+    /// How many keys the running agent holds, or why it cannot be reached; None while
+    /// checking.
+    agent: Option<Result<usize, String>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -44,10 +49,91 @@ impl SshKeysSection {
         let mut this = Self {
             keys: None,
             known: Vec::new(),
+            agent: None,
             _subscriptions: subscriptions,
         };
         this.refresh(cx);
+        this.check_agent(cx);
         this
+    }
+
+    fn check_agent(&mut self, cx: &mut Context<Self>) {
+        if !settings::config(cx).ssh.use_agent {
+            return;
+        }
+        self.agent = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let keys = maomi_ssh::agent_keys()
+                .await
+                .map(|keys| keys.len())
+                .map_err(|err| err.to_string());
+            _ = this.update(cx, |this, cx| {
+                this.agent = Some(keys);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_agent(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = settings::config(cx).ssh.use_agent;
+        let (chip, color): (SharedString, _) = match &self.agent {
+            _ if !enabled => ("Not used".into(), p.line_strong),
+            None => ("Checking\u{2026}".into(), p.line_strong),
+            Some(Ok(keys)) => (
+                format!(
+                    "Agent running \u{b7} {keys} key{}",
+                    if *keys == 1 { "" } else { "s" }
+                )
+                .into(),
+                p.ok,
+            ),
+            Some(Err(_)) => ("No agent found".into(), p.err),
+        };
+        let reason = match &self.agent {
+            Some(Err(reason)) if enabled => Some(SharedString::from(reason.clone())),
+            _ => None,
+        };
+        row(
+            "Use ssh-agent",
+            Some("Try keys loaded in the running agent before each host's own login"),
+            p,
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .id("agent-chip")
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(999.))
+                        .bg(p.surface_2.to_hsla())
+                        .text_size(px(11.5))
+                        .text_color(p.muted.to_hsla())
+                        .when_some(reason, |d, reason| {
+                            d.tooltip(move |window, cx| {
+                                Tooltip::new(reason.clone()).build(window, cx)
+                            })
+                        })
+                        .child(div().size(px(6.)).rounded_full().bg(color.to_hsla()))
+                        .child(chip),
+                )
+                .child(
+                    Switch::new("switch-agent")
+                        .checked(enabled)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            let checked = *checked;
+                            settings::update_config(cx, |c| c.ssh.use_agent = checked);
+                            this.check_agent(cx);
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -90,6 +176,7 @@ impl SshKeysSection {
             ),
             Some(keys) => rows.extend(keys.iter().map(|key| key_row(key, p, cx))),
         }
+        rows.push(self.render_agent(p, cx));
         let unlocked = self.keys.is_some();
         rows.push(
             div()

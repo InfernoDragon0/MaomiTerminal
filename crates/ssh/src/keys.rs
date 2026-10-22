@@ -3,7 +3,7 @@
 
 use russh::keys::ssh_key::private::{Ed25519Keypair, RsaKeypair};
 use russh::keys::ssh_key::{LineEnding, PrivateKey};
-use russh::keys::{HashAlg, decode_secret_key};
+use russh::keys::{Algorithm, HashAlg, decode_secret_key};
 use zeroize::Zeroizing;
 
 use crate::SshError;
@@ -54,6 +54,15 @@ pub fn import_key(text: &str, passphrase: Option<&str>) -> Result<Zeroizing<Stri
         }
         err => SshError::Key(err.to_string()),
     })?;
+    if matches!(
+        key.algorithm(),
+        Algorithm::SkEd25519 | Algorithm::SkEcdsaSha2NistP256
+    ) {
+        // Signing needs the hardware key; ssh-agent talks to it, this app does not.
+        return Err(SshError::Key(
+            "security keys (sk-*) sign through ssh-agent: add it with ssh-add, then pick Agent for the host".into(),
+        ));
+    }
     encode(&key)
 }
 

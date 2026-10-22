@@ -15,7 +15,7 @@ mod hosts;
 mod layout;
 mod snippets;
 
-pub use hosts::{Host, HostAuth, Hosts};
+pub use hosts::{ForwardKind, Host, HostAuth, Hosts, PortForward, RouteError};
 pub use layout::{DrawerLayout, Layout, PaneLayout, TabLayout, WindowBounds, WindowLayout};
 pub use snippets::{Snippet, Snippets};
 
@@ -47,6 +47,20 @@ pub struct Config {
     pub shell: ShellSettings,
     pub updates: UpdateSettings,
     pub security: SecuritySettings,
+    pub ssh: SshSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SshSettings {
+    /// Try the keys in the running ssh-agent before each host's own login.
+    pub use_agent: bool,
+}
+
+impl Default for SshSettings {
+    fn default() -> Self {
+        Self { use_agent: true }
+    }
 }
 
 /// Skin and mode, by name so this crate stays UI-free; the UI maps unknown names to its defaults.
@@ -134,6 +148,7 @@ impl Default for Config {
             shell: ShellSettings::default(),
             updates: UpdateSettings::default(),
             security: SecuritySettings::default(),
+            ssh: SshSettings::default(),
         }
     }
 }

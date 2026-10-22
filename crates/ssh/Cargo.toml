@@ -10,7 +10,7 @@ license.workspace = true
 maomi-term.workspace = true
 # ring instead of the default aws-lc-rs: no cmake / nasm on Windows, and a plain ISC licence.
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
-tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros", "io-util"] }
 async-channel.workspace = true
 zeroize = "1"
 # Same rand as russh; generates new keys.
@@ -19,7 +19,9 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] }
+# Stream of agent connections for russh's agent server in the tests.
+futures = "0.3"
 
 [lints]
 workspace = true

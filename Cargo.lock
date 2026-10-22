@@ -4659,6 +4659,7 @@ name = "maomi-ssh"
 version = "0.1.2"
 dependencies = [
  "async-channel",
+ "futures",
  "maomi-term",
  "rand 0.10.3",
  "russh",

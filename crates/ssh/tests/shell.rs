@@ -1,15 +1,17 @@
 //! End to end against an in-process russh server: host-key prompt, password and key login,
-//! shell output into the terminal grid, input, resize and the exit code.
+//! shell output into the terminal grid, input, resize, the exit code, a jump host, the
+//! three kinds of port forward, and ssh-agent login and forwarding.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use maomi_ssh::{AuthMethod, ConnectOptions, Prompt, SshError, connect};
+use maomi_ssh::{AuthMethod, ConnectOptions, Forward, Login, Prompt, Shell, SshError, connect};
 use maomi_term::{PtySession, SessionOptions, TermSize};
 use russh::keys::{PrivateKey, PublicKey};
 use russh::server::{self, Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId, Pty};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::{TcpListener, TcpStream};
 use zeroize::Zeroizing;
 
 const HOST_KEY: &str = include_str!("fixtures/host_ed25519");
@@ -21,12 +23,18 @@ const CLIENT_PUB: &str = include_str!("fixtures/client_ed25519.pub");
 struct Seen {
     pty: Option<(String, u32, u32)>,
     resizes: Vec<(u32, u32)>,
+    /// What came back through a remote forward.
+    remote: Option<String>,
+    /// Keys the forwarded agent listed.
+    agent_keys: Option<u32>,
 }
 
 #[derive(Clone)]
 struct TestServer {
     seen: Arc<Mutex<Seen>>,
     client_key: PublicKey,
+    /// This connection's shell; data on tunnel channels is not echoed.
+    shell: Option<ChannelId>,
 }
 
 impl server::Server for TestServer {
@@ -88,6 +96,7 @@ impl server::Handler for TestServer {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.shell = Some(channel);
         session.channel_success(channel)?;
         session.data(channel, &b"welcome to fennec\r\n$ "[..])?;
         Ok(())
@@ -106,6 +115,72 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    /// Connects to the requested address and pipes it, for jumps and -L / -D forwards.
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host: &str,
+        port: u32,
+        _: &str,
+        _: u32,
+        reply: server::ChannelOpenHandle,
+        _: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // A refused connection rejects the channel by dropping the reply.
+        if let Ok(mut socket) = TcpStream::connect(format!("{host}:{port}")).await {
+            reply.accept().await;
+            tokio::spawn(async move {
+                let mut stream = channel.into_stream();
+                _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+            });
+        }
+        Ok(())
+    }
+
+    /// Agrees, then sends "ping" through one forwarded connection and records the answer.
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        let (handle, address, port) = (session.handle(), address.to_owned(), *port);
+        let seen = self.seen.clone();
+        tokio::spawn(async move {
+            let channel = handle
+                .channel_open_forwarded_tcpip(address, port, "203.0.113.1", 5000)
+                .await
+                .unwrap();
+            let mut stream = channel.into_stream();
+            stream.write_all(b"ping").await.unwrap();
+            let mut answer = [0u8; 4];
+            stream.read_exact(&mut answer).await.unwrap();
+            seen.lock().unwrap().remote = Some(String::from_utf8_lossy(&answer).into());
+        });
+        Ok(true)
+    }
+
+    /// Asks the forwarded agent for its keys and records how many it has.
+    async fn agent_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        let (handle, seen) = (session.handle(), self.seen.clone());
+        tokio::spawn(async move {
+            let mut stream = handle.channel_open_agent().await.unwrap().into_stream();
+            // SSH_AGENTC_REQUEST_IDENTITIES, length-prefixed.
+            stream.write_all(&[0, 0, 0, 1, 11]).await.unwrap();
+            let mut head = [0u8; 9];
+            stream.read_exact(&mut head).await.unwrap();
+            assert_eq!(head[4], 12, "not an identities answer");
+            let count = u32::from_be_bytes([head[5], head[6], head[7], head[8]]);
+            seen.lock().unwrap().agent_keys = Some(count);
+        });
+        session.channel_success(channel)?;
+        Ok(true)
+    }
+
     /// Echoes input; a line "exit" ends the shell with code 3.
     async fn data(
         &mut self,
@@ -113,6 +188,9 @@ impl server::Handler for TestServer {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.shell != Some(channel) {
+            return Ok(());
+        }
         if data.starts_with(b"exit") {
             session.exit_status_request(channel, 3)?;
             session.eof(channel)?;
@@ -136,6 +214,7 @@ async fn start_server() -> (u16, Arc<Mutex<Seen>>) {
     let mut server = TestServer {
         seen: seen.clone(),
         client_key: PublicKey::from_openssh(CLIENT_PUB).unwrap(),
+        shell: None,
     };
     let socket = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = socket.local_addr().unwrap().port();
@@ -145,12 +224,20 @@ async fn start_server() -> (u16, Arc<Mutex<Seen>>) {
     (port, seen)
 }
 
-fn options(port: u16, auth: Vec<AuthMethod>) -> ConnectOptions {
-    ConnectOptions {
+fn login(port: u16, auth: Vec<AuthMethod>) -> Login {
+    Login {
         host: "127.0.0.1".into(),
         port,
         user: "kit".into(),
         auth,
+    }
+}
+
+fn options(port: u16, auth: Vec<AuthMethod>) -> ConnectOptions {
+    ConnectOptions {
+        route: vec![login(port, auth)],
+        forwards: Vec::new(),
+        forward_agent: false,
         session: SessionOptions {
             size: TermSize::new(100, 30),
             ..SessionOptions::default()
@@ -179,11 +266,11 @@ fn answer_prompts(
                     assert!(key.fingerprint.starts_with("SHA256:"));
                     _ = reply.send(true).await;
                 }
-                Prompt::Password { reply, .. } => {
-                    seen.lock().unwrap().push("password".into());
+                Prompt::Password { hop, reply, .. } => {
+                    seen.lock().unwrap().push(format!("password hop={hop}"));
                     _ = reply.send(password.map(|p| Zeroizing::new(p.into()))).await;
                 }
-                Prompt::KeyPassphrase { retry, reply } => {
+                Prompt::KeyPassphrase { retry, reply, .. } => {
                     seen.lock()
                         .unwrap()
                         .push(format!("passphrase retry={retry}"));
@@ -217,7 +304,7 @@ async fn wait_for_text(session: &PtySession, text: &str) {
 async fn password_login_shell_resize_and_exit() {
     let (port, seen) = start_server().await;
     let (prompts, log) = answer_prompts(Some("pw"), Vec::new());
-    let session = connect(options(port, vec![AuthMethod::Password(None)]), prompts)
+    let Shell { session, .. } = connect(options(port, vec![AuthMethod::Password(None)]), prompts)
         .await
         .unwrap();
 
@@ -228,7 +315,10 @@ async fn password_login_shell_resize_and_exit() {
         seen.lock().unwrap().pty,
         Some(("xterm-256color".into(), 100, 30))
     );
-    assert_eq!(*log.lock().unwrap(), ["hostkey ssh-ed25519", "password"]);
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["hostkey ssh-ed25519", "password hop=0"]
+    );
 
     session.write("hello");
     wait_for_text(&session, "echo:hello").await;
@@ -264,7 +354,7 @@ async fn encrypted_key_asks_for_passphrase_again_after_a_wrong_one() {
         key: Zeroizing::new(CLIENT_KEY.into()),
         passphrase: None,
     }];
-    let session = connect(options(port, auth), prompts).await.unwrap();
+    let session = connect(options(port, auth), prompts).await.unwrap().session;
     wait_for_text(&session, "welcome to fennec").await;
     assert_eq!(
         *log.lock().unwrap(),
@@ -296,4 +386,231 @@ async fn wrong_password_fails_and_refused_host_key_is_reported() {
         .await
         .unwrap_err();
     assert!(matches!(err, SshError::HostKeyRejected), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jump_host_carries_the_target_session() {
+    let (port, _) = start_server().await;
+    let (prompts, log) = answer_prompts(Some("pw"), Vec::new());
+    // The server is its own jump host: the second hop goes through a direct-tcpip channel.
+    let options = ConnectOptions {
+        route: vec![
+            login(port, vec![AuthMethod::Password(None)]),
+            login(port, vec![AuthMethod::Password(None)]),
+        ],
+        ..options(port, Vec::new())
+    };
+    let session = connect(options, prompts).await.unwrap().session;
+    wait_for_text(&session, "welcome to fennec").await;
+    assert_eq!(
+        *log.lock().unwrap(),
+        [
+            "hostkey ssh-ed25519",
+            "password hop=0",
+            "hostkey ssh-ed25519",
+            "password hop=1"
+        ]
+    );
+    session.write("through");
+    wait_for_text(&session, "echo:through").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jump_to_a_closed_port_names_both_hosts() {
+    let (port, _) = start_server().await;
+    let closed = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let closed_port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let (prompts, _) = answer_prompts(Some("pw"), Vec::new());
+    let options = ConnectOptions {
+        route: vec![
+            login(port, vec![AuthMethod::Password(None)]),
+            login(closed_port, vec![AuthMethod::Password(None)]),
+        ],
+        ..options(port, Vec::new())
+    };
+    let err = connect(options, prompts).await.unwrap_err();
+    assert!(matches!(err, SshError::Unreachable { .. }), "{err}");
+}
+
+/// Echoes every connection back to itself; returns its port.
+async fn echo_server() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let (mut read, mut write) = socket.split();
+                _ = tokio::io::copy(&mut read, &mut write).await;
+            });
+        }
+    });
+    port
+}
+
+async fn round_trip(socket: &mut TcpStream, text: &[u8]) {
+    socket.write_all(text).await.unwrap();
+    let mut back = vec![0u8; text.len()];
+    tokio::time::timeout(Duration::from_secs(5), socket.read_exact(&mut back))
+        .await
+        .expect("no echo")
+        .unwrap();
+    assert_eq!(back, text);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_dynamic_and_remote_forwards() {
+    let (port, seen) = start_server().await;
+    let echo = echo_server().await;
+    let (prompts, _) = answer_prompts(Some("pw"), Vec::new());
+    let local = |port| Forward::Local {
+        bind: String::new(),
+        port,
+        host: "127.0.0.1".into(),
+        host_port: echo,
+    };
+    let options = ConnectOptions {
+        forwards: vec![
+            local(0),
+            Forward::Dynamic {
+                bind: String::new(),
+                port: 0,
+            },
+            Forward::Remote {
+                bind: String::new(),
+                port: 9000,
+                host: "127.0.0.1".into(),
+                host_port: echo,
+            },
+            // The echo server holds this port already.
+            local(echo),
+        ],
+        ..options(port, vec![AuthMethod::Password(None)])
+    };
+    let shell = connect(options, prompts).await.unwrap();
+    let [Ok(local_port), Ok(socks_port), Ok(9000), Err(in_use)] = &shell.forwards[..] else {
+        panic!("forwards: {:?}", shell.forwards);
+    };
+    assert_eq!(in_use, "port in use");
+
+    let mut socket = TcpStream::connect(("127.0.0.1", *local_port))
+        .await
+        .unwrap();
+    round_trip(&mut socket, b"over -L").await;
+
+    let mut socks = TcpStream::connect(("127.0.0.1", *socks_port))
+        .await
+        .unwrap();
+    socks.write_all(&[5, 1, 0]).await.unwrap();
+    let mut method = [0u8; 2];
+    socks.read_exact(&mut method).await.unwrap();
+    assert_eq!(method, [5, 0]);
+    let mut request = vec![5, 1, 0, 3, 9];
+    request.extend_from_slice(b"127.0.0.1");
+    request.extend_from_slice(&echo.to_be_bytes());
+    socks.write_all(&request).await.unwrap();
+    let mut reply = [0u8; 10];
+    socks.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[1], 0, "SOCKS reply {reply:?}");
+    round_trip(&mut socks, b"over -D").await;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while seen.lock().unwrap().remote.is_none() {
+        assert!(Instant::now() < deadline, "nothing came back through -R");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(seen.lock().unwrap().remote.as_deref(), Some("ping"));
+
+    // Closing the shell stops the local listeners.
+    shell.session.kill();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", *local_port)).await.is_ok() {
+        assert!(Instant::now() < deadline, "-L listener outlived the shell");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[derive(Clone)]
+struct TestAgent;
+
+impl russh::keys::agent::server::Agent for TestAgent {}
+
+/// Starts an ssh-agent holding the client key and points maomi-ssh at it.
+async fn start_agent() {
+    use russh::keys::agent::client::AgentClient;
+
+    #[cfg(windows)]
+    let path = {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = format!(r"\\.\pipe\maomi-test-agent-{}", std::process::id());
+        let first = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)
+            .unwrap();
+        let pipe = name.clone();
+        let connections = futures::stream::unfold(first, move |server| {
+            let pipe = pipe.clone();
+            async move {
+                let connected = server.connect().await.map(|()| server);
+                Some((connected, ServerOptions::new().create(&pipe).unwrap()))
+            }
+        });
+        tokio::spawn(russh::keys::agent::server::serve(
+            Box::pin(connections),
+            TestAgent,
+        ));
+        name
+    };
+    #[cfg(unix)]
+    let path = {
+        let path = std::env::temp_dir().join(format!("maomi-test-agent-{}", std::process::id()));
+        _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let connections = futures::stream::unfold(listener, |listener| async move {
+            let accepted = listener.accept().await.map(|(socket, _)| socket);
+            Some((accepted, listener))
+        });
+        tokio::spawn(russh::keys::agent::server::serve(
+            Box::pin(connections),
+            TestAgent,
+        ));
+        path.display().to_string()
+    };
+
+    maomi_ssh::set_agent_path(Some(path.clone()));
+    let key = russh::keys::decode_secret_key(CLIENT_KEY, Some("pp")).unwrap();
+    #[cfg(windows)]
+    let mut client = AgentClient::connect_named_pipe(&path).await.unwrap();
+    #[cfg(unix)]
+    let mut client = AgentClient::connect_uds(&path).await.unwrap();
+    client.add_identity(&key, &[]).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_login_and_forwarding() {
+    start_agent().await;
+    let keys = maomi_ssh::agent_keys().await.unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].algorithm, "ssh-ed25519");
+
+    let (port, seen) = start_server().await;
+    let (prompts, log) = answer_prompts(None, Vec::new());
+    let options = ConnectOptions {
+        forward_agent: true,
+        ..options(port, vec![AuthMethod::Agent])
+    };
+    let session = connect(options, prompts).await.unwrap().session;
+    wait_for_text(&session, "welcome to fennec").await;
+    // The agent signed: no password or passphrase was asked.
+    assert_eq!(*log.lock().unwrap(), ["hostkey ssh-ed25519"]);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while seen.lock().unwrap().agent_keys.is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the forwarded agent never answered"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(seen.lock().unwrap().agent_keys, Some(1));
 }

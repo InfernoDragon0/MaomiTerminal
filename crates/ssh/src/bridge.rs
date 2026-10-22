@@ -2,12 +2,13 @@
 //! threads of a [`maomi_term::PtySession`].
 
 use std::io::{self, Read, Write};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use maomi_term::{RemoteControl, TermSize};
 use russh::client::{Handle, Msg};
 use russh::{Channel, ChannelMsg, Disconnect};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::task::JoinHandle;
 
 use crate::Client;
 
@@ -15,6 +16,30 @@ enum Command {
     Data(Vec<u8>),
     Resize(TermSize),
     Close,
+}
+
+/// The SSH sessions behind one shell and its forward listeners; they close together.
+pub(crate) struct Link {
+    pub target: Arc<Handle<Client>>,
+    /// Jump hosts in route order.
+    pub jumps: Vec<Handle<Client>>,
+    pub listeners: Vec<JoinHandle<()>>,
+}
+
+impl Link {
+    /// Stops the listeners, then disconnects from the target back to the first jump host.
+    async fn close(self) {
+        for listener in &self.listeners {
+            listener.abort();
+        }
+        _ = self
+            .target
+            .disconnect(Disconnect::ByApplication, "", "en")
+            .await;
+        for jump in self.jumps.iter().rev() {
+            _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
+        }
+    }
 }
 
 pub(crate) struct Parts {
@@ -36,11 +61,11 @@ pub fn pty_size(size: TermSize) -> (u32, u32, u32, u32) {
 }
 
 /// Starts the pump task for an open shell channel. Must run on the tokio runtime.
-pub(crate) fn start(handle: Handle<Client>, channel: Channel<Msg>) -> Parts {
+pub(crate) fn start(link: Link, channel: Channel<Msg>) -> Parts {
     let (commands, command_rx) = unbounded_channel();
     let (output, output_rx) = mpsc::channel();
     let (exit, exit_rx) = mpsc::channel();
-    tokio::spawn(pump(handle, channel, command_rx, output, exit));
+    tokio::spawn(pump(link, channel, command_rx, output, exit));
     Parts {
         reader: ChannelReader {
             output: output_rx,
@@ -55,7 +80,7 @@ pub(crate) fn start(handle: Handle<Client>, channel: Channel<Msg>) -> Parts {
 
 /// Runs until the channel closes or the session asks to close it, then disconnects.
 async fn pump(
-    handle: Handle<Client>,
+    link: Link,
     mut channel: Channel<Msg>,
     mut commands: UnboundedReceiver<Command>,
     output: mpsc::Sender<Vec<u8>>,
@@ -94,7 +119,7 @@ async fn pump(
     // Closing the output ends the reader; the exit code follows so the waiter can finish.
     drop(output);
     _ = exit.send(exit_code);
-    _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+    link.close().await;
 }
 
 /// Shell output as a blocking [`Read`]; EOF once the channel closes.

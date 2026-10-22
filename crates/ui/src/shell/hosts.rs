@@ -2,20 +2,24 @@
 //! Connect buttons. The workspace opens the panes (see [`HostsEvent`]).
 //!
 //! Hosts live in a GPUI global shared by every window and are saved off the UI thread. The
-//! connection state dots are kept in memory only.
+//! connection state dots and forward states are kept in memory only.
 
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, IconName, Sizable as _};
+use gpui_kit::component::searchable_list::SearchableVec;
+use gpui_kit::component::select::{Select, SelectState};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Icon, IconName, IndexPath, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, Global,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
-use maomi_config::{Host, HostAuth, Hosts};
+use maomi_config::{ForwardKind, Host, HostAuth, Hosts, PortForward, RouteError};
 use maomi_vault::EntryKind;
 
 use super::snippets::{header, icon_button};
@@ -35,9 +39,14 @@ pub enum HostStatus {
     Error,
 }
 
+/// How a forward started: the port it listens on, or why it failed.
+pub(crate) type ForwardResult = Result<u16, String>;
+
 pub(crate) struct HostStore {
     hosts: Hosts,
     status: HashMap<String, HostStatus>,
+    /// Forwards of connected hosts; a forward missing here is stopped.
+    forwards: HashMap<String, Vec<(PortForward, ForwardResult)>>,
     saves: async_channel::Sender<Hosts>,
 }
 
@@ -62,12 +71,39 @@ pub(crate) fn install(cx: &mut App) {
     cx.set_global(HostStore {
         hosts,
         status: HashMap::new(),
+        forwards: HashMap::new(),
         saves,
     });
 }
 
 pub(crate) fn host(id: &str, cx: &App) -> Option<Host> {
     cx.try_global::<HostStore>()?.hosts.get(id).cloned()
+}
+
+/// The hosts to connect through to reach `id`, ending with `id` itself.
+pub(crate) fn route(id: &str, cx: &App) -> Result<Vec<Host>, RouteError> {
+    let store = cx.try_global::<HostStore>().ok_or(RouteError::Missing)?;
+    Ok(store.hosts.route(id)?.into_iter().cloned().collect())
+}
+
+/// Records how a connection's forwards started. A forward working in another pane keeps its
+/// state when this connection fails to bind the same port.
+pub(crate) fn set_forwards(id: &str, results: Vec<(PortForward, ForwardResult)>, cx: &mut App) {
+    if results.is_empty() {
+        return;
+    }
+    let states = cx
+        .global_mut::<HostStore>()
+        .forwards
+        .entry(id.to_owned())
+        .or_default();
+    for (forward, result) in results {
+        match states.iter_mut().find(|(f, _)| *f == forward) {
+            Some((_, old)) if old.is_ok() && result.is_err() => {}
+            Some((_, old)) => *old = result,
+            None => states.push((forward, result)),
+        }
+    }
 }
 
 pub(crate) fn set_status(id: &str, status: HostStatus, cx: &mut App) {
@@ -81,14 +117,20 @@ pub(crate) fn set_status(id: &str, status: HostStatus, cx: &mut App) {
         .insert(id.to_owned(), status);
 }
 
-/// Clears the dot after a connected session ended.
+/// Clears the dot and the forward states after a connected session ended.
 pub(crate) fn clear_status(id: &str, cx: &mut App) {
-    if cx
-        .try_global::<HostStore>()
-        .is_some_and(|s| s.status.get(id) == Some(&HostStatus::Connected))
-    {
-        cx.global_mut::<HostStore>().status.remove(id);
+    let Some(store) = cx.try_global::<HostStore>() else {
+        return;
+    };
+    let connected = store.status.get(id) == Some(&HostStatus::Connected);
+    if !connected && !store.forwards.contains_key(id) {
+        return;
     }
+    let store = cx.global_mut::<HostStore>();
+    if connected {
+        store.status.remove(id);
+    }
+    store.forwards.remove(id);
 }
 
 /// How many hosts log in with the vault key `key_id`.
@@ -131,6 +173,8 @@ fn update_hosts(cx: &mut App, f: impl FnOnce(&mut Vec<Host>)) {
     _ = store.saves.try_send(store.hosts.clone());
 }
 
+type JumpSelect = SelectState<SearchableVec<SharedString>>;
+
 /// The editor's fields.
 struct Form {
     /// None = a new host.
@@ -144,7 +188,22 @@ struct Form {
     auth: HostAuth,
     key_id: Option<String>,
     password_saved: bool,
+    /// "None" first, then the hosts this one may jump through.
+    jump: Entity<JumpSelect>,
+    jump_ids: Vec<Option<String>>,
+    forwards: Vec<PortForward>,
+    forward_agent: bool,
+    /// The open "add forward" row.
+    new_forward: Option<NewForward>,
     error: Option<SharedString>,
+}
+
+struct NewForward {
+    kind: ForwardKind,
+    /// `[bind:]port`
+    listen: Entity<InputState>,
+    /// `host:port`; unused for dynamic forwards.
+    to: Entity<InputState>,
 }
 
 pub struct HostsPanel {
@@ -200,6 +259,34 @@ impl HostsPanel {
         let folder = input(host.folder.clone(), "Home lab", cx);
         let tags = input(host.tags.join(", "), "lab, prod", cx);
         name.update(cx, |input, cx| input.focus(window, cx));
+
+        // Every other host, except those that already jump through this one.
+        let mut jump_ids = vec![None];
+        let mut labels = vec![SharedString::from("None")];
+        if let Some(store) = cx.try_global::<HostStore>() {
+            for other in &store.hosts.items {
+                let loops = id.as_deref().is_some_and(|me| {
+                    other.id == me
+                        || store
+                            .hosts
+                            .route(&other.id)
+                            .is_ok_and(|r| r.iter().any(|h| h.id == me))
+                });
+                if !loops {
+                    jump_ids.push(Some(other.id.clone()));
+                    labels.push(display_name(other).into());
+                }
+            }
+        }
+        let jump_ix = jump_ids.iter().position(|j| *j == host.jump).unwrap_or(0);
+        let jump = cx.new(|cx| {
+            JumpSelect::new(
+                SearchableVec::new(labels),
+                Some(IndexPath::new(jump_ix)),
+                window,
+                cx,
+            )
+        });
         self.form = Some(Form {
             id,
             name,
@@ -211,12 +298,60 @@ impl HostsPanel {
             auth: host.auth,
             key_id: host.key_id,
             password_saved: host.password_saved,
+            jump,
+            jump_ids,
+            forwards: host.forwards,
+            forward_agent: host.forward_agent,
+            new_forward: None,
             error: None,
         });
         cx.notify();
     }
 
-    fn save_form(&mut self, cx: &mut Context<Self>) {
+    /// Opens the "add forward" row, or adds what it holds.
+    fn add_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.form else {
+            return;
+        };
+        let Some(new) = &form.new_forward else {
+            let mut input = |placeholder: &'static str| {
+                cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
+            };
+            let (listen, to) = (input("Port"), input("host:port"));
+            listen.update(cx, |input, cx| input.focus(window, cx));
+            form.new_forward = Some(NewForward {
+                kind: ForwardKind::Local,
+                listen,
+                to,
+            });
+            cx.notify();
+            return;
+        };
+        let listen = new.listen.read(cx).value().to_string();
+        let to = new.to.read(cx).value().to_string();
+        match PortForward::parse(new.kind, &listen, &to) {
+            Ok(forward) => {
+                if !form.forwards.contains(&forward) {
+                    form.forwards.push(forward);
+                }
+                form.new_forward = None;
+                form.error = None;
+            }
+            Err(error) => form.error = Some(error.into()),
+        }
+        cx.notify();
+    }
+
+    fn save_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A filled-in "add forward" row is added first; a bad one stops the save.
+        if let Some(new) = self.form.as_ref().and_then(|f| f.new_forward.as_ref())
+            && !new.listen.read(cx).value().trim().is_empty()
+        {
+            self.add_forward(window, cx);
+            if self.form.as_ref().is_some_and(|f| f.new_forward.is_some()) {
+                return;
+            }
+        }
         let Some(form) = &mut self.form else {
             return;
         };
@@ -233,6 +368,12 @@ impl HostsPanel {
             cx.notify();
             return;
         }
+        let jump = form
+            .jump
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|ix| form.jump_ids.get(ix.row).cloned())
+            .flatten();
         let edited = Host {
             id: form.id.clone().unwrap_or_else(Host::new_id),
             name: text(&form.name),
@@ -249,6 +390,9 @@ impl HostsPanel {
                 .filter(|t| !t.is_empty())
                 .map(String::from)
                 .collect(),
+            jump,
+            forwards: form.forwards.clone(),
+            forward_agent: form.forward_agent,
         };
         let id = edited.id.clone();
         update_hosts(cx, |items| match items.iter_mut().find(|h| h.id == id) {
@@ -270,7 +414,14 @@ impl HostsPanel {
             // Only possible while the vault is open; a locked vault keeps the entry.
             vault::with_vault(cx, |v| v.remove(&host.password_entry()));
         }
-        update_hosts(cx, |items| items.retain(|h| h.id != id));
+        update_hosts(cx, |items| {
+            items.retain(|h| h.id != id);
+            for host in items.iter_mut() {
+                if host.jump.as_deref() == Some(id.as_str()) {
+                    host.jump = None;
+                }
+            }
+        });
         self.selected = None;
         self.form = None;
         cx.notify();
@@ -494,11 +645,7 @@ impl HostsPanel {
         let hover = p.surface_2.to_hsla();
         let id = host.id.clone();
         let (connect_id, split_id, edit_id) = (id.clone(), id.clone(), id.clone());
-        let name = if host.name.is_empty() {
-            host.host.clone()
-        } else {
-            host.name.clone()
-        };
+        let name = display_name(host);
         div()
             .id(SharedString::from(format!("host-{id}")))
             .flex()
@@ -625,35 +772,44 @@ impl HostsPanel {
                 )
                 .child(input)
         };
-        let auth_seg =
-            [(HostAuth::Password, "Password"), (HostAuth::Key, "Key")].map(|(auth, label)| {
-                let on = form.auth == auth;
-                let emph = p.fg_emph.to_hsla();
-                div()
-                    .id(SharedString::from(format!("host-auth-{label}")))
-                    .px(px(12.))
-                    .py(px(4.))
-                    .rounded(px(7.))
-                    .text_size(px(12.))
-                    .map(|d| {
-                        if on {
-                            d.text_color(emph).bg(p.surface.to_hsla())
-                        } else {
-                            d.text_color(p.muted.to_hsla())
-                                .hover(move |s| s.text_color(emph))
-                        }
-                    })
-                    .on_click(cx.listener(move |panel, _, _, cx| {
-                        if let Some(form) = &mut panel.form {
-                            form.auth = auth;
-                            cx.notify();
-                        }
-                    }))
-                    .child(label)
-            });
+        let auth_seg = [
+            (HostAuth::Password, "Password"),
+            (HostAuth::Key, "Key"),
+            (HostAuth::Agent, "Agent"),
+        ]
+        .map(|(auth, label)| {
+            let on = form.auth == auth;
+            let emph = p.fg_emph.to_hsla();
+            div()
+                .id(SharedString::from(format!("host-auth-{label}")))
+                .px(px(12.))
+                .py(px(4.))
+                .rounded(px(7.))
+                .text_size(px(12.))
+                .map(|d| {
+                    if on {
+                        d.text_color(emph).bg(p.surface.to_hsla())
+                    } else {
+                        d.text_color(p.muted.to_hsla())
+                            .hover(move |s| s.text_color(emph))
+                    }
+                })
+                .on_click(cx.listener(move |panel, _, _, cx| {
+                    if let Some(form) = &mut panel.form {
+                        form.auth = auth;
+                        cx.notify();
+                    }
+                }))
+                .child(label)
+        });
         let auth_detail = match form.auth {
             HostAuth::Password => self.render_password_row(form, p, cx),
             HostAuth::Key => self.render_key_picker(form, p, cx),
+            HostAuth::Agent => div()
+                .text_size(px(12.))
+                .text_color(p.muted.to_hsla())
+                .child("Uses the keys loaded in ssh-agent. Nothing is stored for this host.")
+                .into_any_element(),
         };
         let title = if form.id.is_some() {
             "EDIT HOST"
@@ -735,6 +891,35 @@ impl HostsPanel {
                 "Tags (comma-separated)",
                 Input::new(&form.tags).small().into_any_element(),
             ))
+            .child(field(
+                "Jump host (ProxyJump)",
+                Select::new(&form.jump).small().into_any_element(),
+            ))
+            .child(self.render_forwards(form, p, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        Checkbox::new("host-forward-agent")
+                            .checked(form.forward_agent)
+                            .label("Forward ssh-agent")
+                            .on_click(cx.listener(|panel, checked: &bool, _, cx| {
+                                if let Some(form) = &mut panel.form {
+                                    form.forward_agent = *checked;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(
+                        div()
+                            .pl(px(24.))
+                            .text_size(px(11.))
+                            .text_color(p.muted.to_hsla())
+                            .child("Programs on the server can use your keys (ssh -A). Only for servers you trust."),
+                    ),
+            )
             .child(
                 div()
                     .flex()
@@ -779,7 +964,9 @@ impl HostsPanel {
                             .primary()
                             .small()
                             .label("Save")
-                            .on_click(cx.listener(|panel, _, _, cx| panel.save_form(cx))),
+                            .on_click(
+                                cx.listener(|panel, _, window, cx| panel.save_form(window, cx)),
+                            ),
                     )
                     .child(Button::new("host-cancel").small().label("Cancel").on_click(
                         cx.listener(|panel, _, _, cx| {
@@ -797,6 +984,215 @@ impl HostsPanel {
                                 .on_click(
                                     cx.listener(|panel, _, _, cx| panel.delete_form_host(cx)),
                                 ),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// The forward list with each one's state, and the add row.
+    fn render_forwards(&self, form: &Form, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let states = form
+            .id
+            .as_ref()
+            .and_then(|id| cx.try_global::<HostStore>()?.forwards.get(id));
+        let rows = form.forwards.iter().enumerate().map(|(ix, forward)| {
+            let state = states.and_then(|s| s.iter().find(|(f, _)| f == forward).map(|(_, r)| r));
+            let (letter, kind) = match forward.kind {
+                ForwardKind::Local => ("L", "Local forward"),
+                ForwardKind::Remote => ("R", "Remote forward"),
+                ForwardKind::Dynamic => ("D", "Dynamic SOCKS proxy"),
+            };
+            let (chip, color): (SharedString, _) = match state {
+                Some(Ok(_)) => ("active".into(), p.ok),
+                Some(Err(reason)) => (reason.clone().into(), p.err),
+                None => ("stopped".into(), p.line_strong),
+            };
+            div()
+                .id(("host-fwd", ix))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(p.line.to_hsla())
+                .bg(p.surface_2.to_hsla())
+                .text_size(px(11.5))
+                .child(
+                    div()
+                        .id("host-fwd-kind")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(22.))
+                        .h(px(20.))
+                        .rounded(px(6.))
+                        .bg(p.surface_3.to_hsla())
+                        .text_color(p.fg_emph.to_hsla())
+                        .tooltip(move |window, cx| Tooltip::new(kind).build(window, cx))
+                        .child(letter),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .font_family(TERMINAL_FAMILY)
+                        .text_color(p.fg.to_hsla())
+                        .child(forward.summary()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .max_w(px(110.))
+                        .px(px(7.))
+                        .rounded(px(999.))
+                        .bg(p.surface.to_hsla())
+                        .text_size(px(11.))
+                        .text_color(p.muted.to_hsla())
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(color.to_hsla()),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(chip),
+                        ),
+                )
+                .child(
+                    icon_button("host-fwd-remove", IconName::Close, "Remove forward", p).on_click(
+                        cx.listener(move |panel, _, _, cx| {
+                            if let Some(form) = &mut panel.form
+                                && ix < form.forwards.len()
+                            {
+                                form.forwards.remove(ix);
+                                cx.notify();
+                            }
+                        }),
+                    ),
+                )
+        });
+        let add_row = form.new_forward.as_ref().map(|new| {
+            let kinds = [
+                (ForwardKind::Local, "L"),
+                (ForwardKind::Remote, "R"),
+                (ForwardKind::Dynamic, "D"),
+            ]
+            .map(|(kind, label)| {
+                let on = new.kind == kind;
+                let emph = p.fg_emph.to_hsla();
+                div()
+                    .id(SharedString::from(format!("host-fwd-new-{label}")))
+                    .px(px(7.))
+                    .py(px(3.))
+                    .rounded(px(6.))
+                    .text_size(px(12.))
+                    .map(|d| {
+                        if on {
+                            d.text_color(emph).bg(p.surface.to_hsla())
+                        } else {
+                            d.text_color(p.muted.to_hsla())
+                                .hover(move |s| s.text_color(emph))
+                        }
+                    })
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        if let Some(new) = panel.form.as_mut().and_then(|f| f.new_forward.as_mut())
+                        {
+                            new.kind = kind;
+                            cx.notify();
+                        }
+                    }))
+                    .child(label)
+            });
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .gap(px(1.))
+                        .p(px(2.))
+                        .rounded(px(8.))
+                        .bg(p.surface_2.to_hsla())
+                        .children(kinds),
+                )
+                .child(
+                    div()
+                        .w(px(64.))
+                        .flex_none()
+                        .child(Input::new(&new.listen).small()),
+                )
+                .when(new.kind != ForwardKind::Dynamic, |d| {
+                    d.child(div().flex_1().min_w_0().child(Input::new(&new.to).small()))
+                })
+        });
+        let hint = form.new_forward.as_ref().map(|new| {
+            div()
+                .text_size(px(11.))
+                .text_color(p.muted.to_hsla())
+                .child(match new.kind {
+                    ForwardKind::Local => "Port here, then where the server connects.",
+                    ForwardKind::Remote => "Port on the server, then where this machine connects.",
+                    ForwardKind::Dynamic => "Port here for a SOCKS5 proxy through the server.",
+                })
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(p.fg_emph.to_hsla())
+                    .child("Port forwards"),
+            )
+            .children(rows)
+            .children(add_row)
+            .children(hint)
+            .child(
+                div()
+                    .flex()
+                    .gap(px(6.))
+                    .child(
+                        Button::new("host-fwd-add")
+                            .small()
+                            .label(if form.new_forward.is_some() {
+                                "Add"
+                            } else {
+                                "+ Add forward"
+                            })
+                            .on_click(
+                                cx.listener(|panel, _, window, cx| panel.add_forward(window, cx)),
+                            ),
+                    )
+                    .when(form.new_forward.is_some(), |d| {
+                        d.child(
+                            Button::new("host-fwd-cancel")
+                                .ghost()
+                                .small()
+                                .label("Cancel")
+                                .on_click(cx.listener(|panel, _, _, cx| {
+                                    if let Some(form) = &mut panel.form {
+                                        form.new_forward = None;
+                                        form.error = None;
+                                        cx.notify();
+                                    }
+                                })),
                         )
                     }),
             )
@@ -925,6 +1321,15 @@ impl Render for HostsPanel {
             .border_r_1()
             .border_color(p.line.to_hsla())
             .child(body)
+    }
+}
+
+/// The host's name, or its address when it has none.
+pub(crate) fn display_name(host: &Host) -> String {
+    if host.name.trim().is_empty() {
+        host.host.clone()
+    } else {
+        host.name.clone()
     }
 }
 

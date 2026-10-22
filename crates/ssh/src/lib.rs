@@ -1,11 +1,16 @@
 //! SSH client for remote shells. Has no GPUI dependency.
 //!
-//! russh runs on one tokio thread owned by this crate. [`connect`] returns a [`PtySession`]
-//! that the UI renders like a local shell. Questions for the user (trust this host key, the
-//! password, a key passphrase, keyboard-interactive prompts) arrive as [`Prompt`]s carrying
-//! a reply channel; dropping the prompt receiver cancels the connection.
+//! russh runs on one tokio thread owned by this crate. [`connect`] returns a [`Shell`] whose
+//! [`PtySession`] the UI renders like a local shell. Questions for the user (trust this host
+//! key, the password, a key passphrase, keyboard-interactive prompts) arrive as [`Prompt`]s
+//! carrying a reply channel; dropping the prompt receiver cancels the connection.
+//!
+//! A connection may hop through jump hosts (ProxyJump): each hop is a full SSH session
+//! tunnelled through a `direct-tcpip` channel of the one before it.
 
+mod agent;
 mod bridge;
+mod forward;
 mod keys;
 mod known_hosts;
 
@@ -15,11 +20,14 @@ use std::thread;
 use std::time::Duration;
 
 use maomi_term::{PtySession, RemoteIo, SessionOptions};
-use russh::client::{self, Handle, KeyboardInteractiveAuthResponse};
+use russh::Channel;
+use russh::client::{self, Handle, KeyboardInteractiveAuthResponse, Msg};
 use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use zeroize::Zeroizing;
 
+pub use agent::{AgentKey, agent_keys, set_agent_path};
 pub use bridge::pty_size;
+pub use forward::Forward;
 pub use keys::{KeyInfo, KeyType, generate_key, import_key, key_info};
 pub use known_hosts::{KnownHost, KnownHosts, Trust};
 
@@ -30,15 +38,34 @@ const PASSPHRASE_TRIES: usize = 3;
 
 /// Where to connect and how to log in.
 pub struct ConnectOptions {
+    /// Jump hosts in order, then the target; each hop is reached through the one before it.
+    pub route: Vec<Login>,
+    /// Started once the shell is open; they stop when it closes.
+    pub forwards: Vec<Forward>,
+    /// Lets the target use the local ssh-agent (`ssh -A`).
+    pub forward_agent: bool,
+    /// Size, scrollback and cursor for the terminal; the shell fields do not apply.
+    pub session: SessionOptions,
+    /// Shown as the shell name, e.g. "ssh fennec".
+    pub label: String,
+}
+
+/// One server on the route and how to log in to it.
+pub struct Login {
     pub host: String,
     pub port: u16,
     pub user: String,
     /// Tried in order until one succeeds.
     pub auth: Vec<AuthMethod>,
-    /// Size, scrollback and cursor for the terminal; the shell fields do not apply.
-    pub session: SessionOptions,
-    /// Shown as the shell name, e.g. "ssh fennec".
-    pub label: String,
+}
+
+/// An open remote shell.
+#[derive(Debug)]
+pub struct Shell {
+    pub session: PtySession,
+    /// One per [`ConnectOptions::forwards`], in order: the port it listens on, or why it
+    /// failed.
+    pub forwards: Vec<Result<u16, String>>,
 }
 
 pub enum AuthMethod {
@@ -51,6 +78,8 @@ pub enum AuthMethod {
         passphrase: Option<Zeroizing<String>>,
     },
     KeyboardInteractive,
+    /// Every key in the running ssh-agent; skipped when there is no agent.
+    Agent,
 }
 
 /// The server's host key, for the trust question.
@@ -69,24 +98,28 @@ pub struct HostKey {
 /// Answer channel of a [`Prompt`]; dropping it cancels the connection.
 pub type Reply<T> = async_channel::Sender<T>;
 
-/// A question for the user while connecting.
+/// A question for the user while connecting. `hop` is the index in
+/// [`ConnectOptions::route`] of the server asking.
 pub enum Prompt {
     /// Reply true to trust the key and go on. The caller checks its known hosts first and
     /// may answer without asking.
     HostKey { key: HostKey, reply: Reply<bool> },
     /// Reply None to cancel.
     Password {
+        hop: usize,
         user: String,
         host: String,
         reply: Reply<Option<Zeroizing<String>>>,
     },
     /// The private key is encrypted. `retry` is true after a wrong passphrase.
     KeyPassphrase {
+        hop: usize,
         retry: bool,
         reply: Reply<Option<Zeroizing<String>>>,
     },
     /// One answer per prompt, in order; `echo` false means hide the typing.
     KeyboardInteractive {
+        hop: usize,
         name: String,
         instructions: String,
         prompts: Vec<KeyboardPrompt>,
@@ -107,12 +140,22 @@ pub enum SshError {
         host: String,
         source: std::io::Error,
     },
+    #[error("cannot reach {host} through {via}: {reason}")]
+    Unreachable {
+        host: String,
+        via: String,
+        reason: String,
+    },
+    #[error("no host to connect to")]
+    NoHost,
     #[error("the host key was not trusted")]
     HostKeyRejected,
     #[error("authentication failed")]
     AuthFailed,
     #[error("cancelled")]
     Cancelled,
+    #[error("ssh-agent: {0}")]
+    Agent(String),
     #[error("private key: {0}")]
     Key(String),
     #[error("the private key is encrypted; enter its passphrase")]
@@ -123,12 +166,12 @@ pub enum SshError {
     Terminal(String),
 }
 
-/// Connects, logs in and opens a shell with a PTY. Works from any async executor: the SSH work
-/// runs on this crate's tokio thread.
+/// Connects along the route, logs in, opens a shell with a PTY and starts the forwards. Works
+/// from any async executor: the SSH work runs on this crate's tokio thread.
 pub async fn connect(
     options: ConnectOptions,
     prompts: async_channel::Sender<Prompt>,
-) -> Result<PtySession, SshError> {
+) -> Result<Shell, SshError> {
     let (done, result) = async_channel::bounded(1);
     runtime().spawn(async move {
         _ = done.send(open_shell(options, prompts).await).await;
@@ -156,7 +199,7 @@ fn runtime() -> &'static tokio::runtime::Handle {
 async fn open_shell(
     options: ConnectOptions,
     prompts: async_channel::Sender<Prompt>,
-) -> Result<PtySession, SshError> {
+) -> Result<Shell, SshError> {
     let config = Arc::new(client::Config {
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
@@ -164,34 +207,72 @@ async fn open_shell(
         ..client::Config::default()
     });
     let rejected = Arc::new(AtomicBool::new(false));
-    let handler = Client {
-        host: options.host.clone(),
-        port: options.port,
-        prompts: prompts.clone(),
-        rejected: rejected.clone(),
-    };
-    let mut handle =
-        match client::connect(config, (options.host.as_str(), options.port), handler).await {
+    let remotes = forward::Remotes::default();
+    // Every hop logged in so far; the last one carries the next.
+    let mut hops: Vec<Handle<Client>> = Vec::with_capacity(options.route.len());
+    for (hop, login) in options.route.iter().enumerate() {
+        let handler = Client {
+            host: login.host.clone(),
+            port: login.port,
+            prompts: prompts.clone(),
+            rejected: rejected.clone(),
+            remotes: remotes.clone(),
+            forward_agent: options.forward_agent && hop + 1 == options.route.len(),
+        };
+        let connected = match hops.last() {
+            None => {
+                client::connect(config.clone(), (login.host.as_str(), login.port), handler).await
+            }
+            Some(jump) => {
+                let channel = jump
+                    .channel_open_direct_tcpip(
+                        login.host.as_str(),
+                        u32::from(login.port),
+                        "127.0.0.1",
+                        0,
+                    )
+                    .await
+                    .map_err(|err| SshError::Unreachable {
+                        host: login.host.clone(),
+                        via: options.route[hop - 1].host.clone(),
+                        reason: err.to_string(),
+                    })?;
+                client::connect_stream(config.clone(), channel.into_stream(), handler).await
+            }
+        };
+        let mut handle = match connected {
             Ok(handle) => handle,
             Err(_) if rejected.load(Ordering::Acquire) => return Err(SshError::HostKeyRejected),
             Err(russh::Error::IO(source)) => {
                 return Err(SshError::Connect {
-                    host: options.host,
+                    host: login.host.clone(),
                     source,
                 });
             }
             Err(err) => return Err(err.into()),
         };
-    authenticate(&mut handle, &options, &prompts).await?;
+        authenticate(&mut handle, hop, login, &prompts).await?;
+        hops.push(handle);
+    }
+    let target = Arc::new(hops.pop().ok_or(SshError::NoHost)?);
 
-    let channel = handle.channel_open_session().await?;
+    let channel = target.channel_open_session().await?;
     let size = pty_size(options.session.size);
     channel
         .request_pty(true, TERM, size.0, size.1, size.2, size.3, &[])
         .await?;
+    if options.forward_agent {
+        channel.agent_forward(false).await?;
+    }
     channel.request_shell(true).await?;
+    let (forwards, listeners) = forward::start(&target, &options.forwards, &remotes).await;
 
-    let parts = bridge::start(handle, channel);
+    let link = bridge::Link {
+        target,
+        jumps: hops,
+        listeners,
+    };
+    let parts = bridge::start(link, channel);
     let io = RemoteIo {
         reader: Box::new(parts.reader),
         writer: Box::new(parts.writer),
@@ -199,46 +280,51 @@ async fn open_shell(
         exit: parts.exit,
         label: options.label,
     };
-    PtySession::attach(io, options.session).map_err(|err| SshError::Terminal(err.to_string()))
+    let session = PtySession::attach(io, options.session)
+        .map_err(|err| SshError::Terminal(err.to_string()))?;
+    Ok(Shell { session, forwards })
 }
 
 async fn authenticate(
     handle: &mut Handle<Client>,
-    options: &ConnectOptions,
+    hop: usize,
+    login: &Login,
     prompts: &async_channel::Sender<Prompt>,
 ) -> Result<(), SshError> {
-    for method in &options.auth {
+    for method in &login.auth {
         let ok = match method {
             AuthMethod::Password(password) => {
                 let password = match password {
                     Some(password) => password.clone(),
                     None => ask(prompts, |reply| Prompt::Password {
-                        user: options.user.clone(),
-                        host: options.host.clone(),
+                        hop,
+                        user: login.user.clone(),
+                        host: login.host.clone(),
                         reply,
                     })
                     .await?
                     .ok_or(SshError::Cancelled)?,
                 };
                 handle
-                    .authenticate_password(options.user.as_str(), password.as_str())
+                    .authenticate_password(login.user.as_str(), password.as_str())
                     .await?
                     .success()
             }
             AuthMethod::PrivateKey { key, passphrase } => {
-                let key = load_key(key, passphrase.as_ref(), prompts).await?;
+                let key = load_key(hop, key, passphrase.as_ref(), prompts).await?;
                 let hash = handle.best_supported_rsa_hash().await?.flatten();
                 handle
                     .authenticate_publickey(
-                        options.user.as_str(),
+                        login.user.as_str(),
                         PrivateKeyWithHashAlg::new(Arc::new(key), hash),
                     )
                     .await?
                     .success()
             }
             AuthMethod::KeyboardInteractive => {
-                keyboard_interactive(handle, &options.user, prompts).await?
+                keyboard_interactive(handle, hop, &login.user, prompts).await?
             }
+            AuthMethod::Agent => agent::login(handle, &login.user).await?,
         };
         if ok {
             return Ok(());
@@ -249,6 +335,7 @@ async fn authenticate(
 
 /// Decodes a private key, asking for its passphrase when it is encrypted.
 async fn load_key(
+    hop: usize,
     key: &str,
     passphrase: Option<&Zeroizing<String>>,
     prompts: &async_channel::Sender<Prompt>,
@@ -260,7 +347,7 @@ async fn load_key(
             Err(err) if attempt < PASSPHRASE_TRIES && needs_passphrase(&err, &passphrase) => {
                 let retry = passphrase.is_some();
                 passphrase = Some(
-                    ask(prompts, |reply| Prompt::KeyPassphrase { retry, reply })
+                    ask(prompts, |reply| Prompt::KeyPassphrase { hop, retry, reply })
                         .await?
                         .ok_or(SshError::Cancelled)?,
                 );
@@ -284,6 +371,7 @@ fn needs_passphrase(err: &russh::keys::Error, passphrase: &Option<Zeroizing<Stri
 
 async fn keyboard_interactive(
     handle: &mut Handle<Client>,
+    hop: usize,
     user: &str,
     prompts: &async_channel::Sender<Prompt>,
 ) -> Result<bool, SshError> {
@@ -311,6 +399,7 @@ async fn keyboard_interactive(
                         })
                         .collect();
                     ask(prompts, |reply| Prompt::KeyboardInteractive {
+                        hop,
                         name,
                         instructions,
                         prompts: questions,
@@ -350,6 +439,10 @@ struct Client {
     prompts: async_channel::Sender<Prompt>,
     /// Set when the user refused the host key, so the error says so.
     rejected: Arc<AtomicBool>,
+    /// Where the server's remote-forward connections go.
+    remotes: forward::Remotes,
+    /// Accept the server's requests to reach the local ssh-agent.
+    forward_agent: bool,
 }
 
 impl client::Handler for Client {
@@ -377,5 +470,37 @@ impl client::Handler for Client {
             self.rejected.store(true, Ordering::Release);
         }
         Ok(trusted)
+    }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        // A port we never asked for is rejected by dropping the reply.
+        if let Some((host, port)) = forward::remote_target(&self.remotes, connected_port) {
+            reply.accept().await;
+            forward::serve_remote(channel, host, port);
+        }
+        Ok(())
+    }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: Channel<Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        // Unasked-for agent requests are rejected by dropping the reply.
+        if self.forward_agent {
+            reply.accept().await;
+            agent::serve_forwarded(channel);
+        }
+        Ok(())
     }
 }

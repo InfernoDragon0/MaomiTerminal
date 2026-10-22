@@ -30,6 +30,8 @@ pub enum HostAuth {
     Password,
     /// A private key stored in the vault.
     Key,
+    /// The keys loaded in the running ssh-agent; nothing is stored.
+    Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +51,109 @@ pub struct Host {
     /// Folder in the Hosts tree; empty = top level.
     pub folder: String,
     pub tags: Vec<String>,
+    /// Id of the saved host to connect through (ProxyJump). That host's own jump host comes
+    /// before it, so jump hosts chain.
+    pub jump: Option<String>,
+    /// Started with every connection to this host.
+    pub forwards: Vec<PortForward>,
+    /// Lets the server use the local ssh-agent (`ssh -A`).
+    pub forward_agent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardKind {
+    /// `ssh -L`: listen here, connect from the server.
+    #[default]
+    Local,
+    /// `ssh -R`: the server listens, connect from here.
+    Remote,
+    /// `ssh -D`: a SOCKS5 proxy here.
+    Dynamic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PortForward {
+    pub kind: ForwardKind,
+    /// Listen address; empty = loopback.
+    pub bind: String,
+    /// Listen port: here for local and dynamic, on the server for remote.
+    pub port: u16,
+    /// Where connections go; unused for dynamic.
+    pub host: String,
+    pub host_port: u16,
+}
+
+impl PortForward {
+    /// Reads the editor's fields: `listen` is `[bind:]port`, `to` is `host:port` (an IPv6
+    /// host in brackets) and is ignored for dynamic forwards.
+    pub fn parse(kind: ForwardKind, listen: &str, to: &str) -> Result<Self, &'static str> {
+        let (bind, port) = match listen.trim().rsplit_once(':') {
+            Some((bind, port)) => (unbracket(bind), port),
+            None => ("", listen.trim()),
+        };
+        let port = port
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p > 0)
+            .ok_or("The listen port must be a number from 1 to 65535.")?;
+        let (host, host_port) = if kind == ForwardKind::Dynamic {
+            (String::new(), 0)
+        } else {
+            let (host, host_port) = to
+                .trim()
+                .rsplit_once(':')
+                .ok_or("Enter the destination as host:port.")?;
+            let host_port = host_port
+                .parse::<u16>()
+                .ok()
+                .filter(|p| *p > 0)
+                .ok_or("The destination port must be a number from 1 to 65535.")?;
+            let host = unbracket(host);
+            if host.is_empty() {
+                return Err("Enter the destination as host:port.");
+            }
+            (host.to_owned(), host_port)
+        };
+        Ok(Self {
+            kind,
+            bind: bind.to_owned(),
+            port,
+            host,
+            host_port,
+        })
+    }
+
+    /// One line for the editor, e.g. `8080 → localhost:80`.
+    pub fn summary(&self) -> String {
+        let listen = if self.bind.is_empty() {
+            self.port.to_string()
+        } else {
+            format!("{}:{}", bracket(&self.bind), self.port)
+        };
+        let to = format!("{}:{}", bracket(&self.host), self.host_port);
+        match self.kind {
+            ForwardKind::Local => format!("{listen} \u{2192} {to}"),
+            ForwardKind::Remote => format!("{listen} \u{2190} {to}"),
+            ForwardKind::Dynamic => format!("{listen} (SOCKS5)"),
+        }
+    }
+}
+
+fn unbracket(host: &str) -> &str {
+    host.trim()
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host.trim())
+}
+
+fn bracket(host: &str) -> String {
+    if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    }
 }
 
 impl Default for Host {
@@ -64,6 +169,9 @@ impl Default for Host {
             password_saved: false,
             folder: String::new(),
             tags: Vec::new(),
+            jump: None,
+            forwards: Vec::new(),
+            forward_agent: false,
         }
     }
 }
@@ -92,6 +200,14 @@ impl Host {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RouteError {
+    #[error("this host or one of its jump hosts was deleted")]
+    Missing,
+    #[error("the jump hosts lead back to a host already on the way")]
+    Loop,
+}
+
 impl Hosts {
     pub fn path() -> Result<PathBuf, ConfigError> {
         Ok(crate::config_dir()?.join(FILE_NAME))
@@ -110,6 +226,19 @@ impl Hosts {
 
     pub fn get(&self, id: &str) -> Option<&Host> {
         self.items.iter().find(|h| h.id == id)
+    }
+
+    /// The hosts to connect through, first jump host first, ending with `id` itself.
+    pub fn route(&self, id: &str) -> Result<Vec<&Host>, RouteError> {
+        let mut route = vec![self.get(id).ok_or(RouteError::Missing)?];
+        while let Some(jump) = route[0].jump.as_deref() {
+            let host = self.get(jump).ok_or(RouteError::Missing)?;
+            if route.iter().any(|h| h.id == host.id) {
+                return Err(RouteError::Loop);
+            }
+            route.insert(0, host);
+        }
+        Ok(route)
     }
 
     /// Distinct non-empty tags in first-seen order.
@@ -206,6 +335,52 @@ mod tests {
         assert_eq!(loaded.tags(), ["lab", "prod"]);
         assert_eq!(loaded.items[0].address(), "kit@fennec.lan:22");
         _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn route_follows_jump_hosts_and_stops_at_a_loop() {
+        let mut hosts = Hosts {
+            version: 0,
+            items: vec![
+                Host {
+                    id: "a".into(),
+                    jump: Some("b".into()),
+                    ..Host::default()
+                },
+                Host {
+                    id: "b".into(),
+                    jump: Some("c".into()),
+                    ..Host::default()
+                },
+                Host {
+                    id: "c".into(),
+                    ..Host::default()
+                },
+            ],
+        };
+        let ids = |route: Vec<&Host>| route.iter().map(|h| h.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(hosts.route("a").unwrap()), ["c", "b", "a"]);
+        assert_eq!(ids(hosts.route("c").unwrap()), ["c"]);
+        hosts.items[2].jump = Some("a".into());
+        assert_eq!(hosts.route("a").unwrap_err(), RouteError::Loop);
+        hosts.items[2].jump = Some("gone".into());
+        assert_eq!(hosts.route("a").unwrap_err(), RouteError::Missing);
+    }
+
+    #[test]
+    fn forwards_parse_and_summarise() {
+        let local = PortForward::parse(ForwardKind::Local, "8080", "localhost:80").unwrap();
+        assert_eq!((local.bind.as_str(), local.port), ("", 8080));
+        assert_eq!(local.summary(), "8080 \u{2192} localhost:80");
+        let remote = PortForward::parse(ForwardKind::Remote, "0.0.0.0:9000", "[::1]:3000").unwrap();
+        assert_eq!(remote.bind, "0.0.0.0");
+        assert_eq!(remote.host, "::1");
+        assert_eq!(remote.summary(), "0.0.0.0:9000 \u{2190} [::1]:3000");
+        let socks = PortForward::parse(ForwardKind::Dynamic, "[::1]:1080", "ignored").unwrap();
+        assert_eq!(socks.summary(), "[::1]:1080 (SOCKS5)");
+        assert!(PortForward::parse(ForwardKind::Local, "80800", "x:1").is_err());
+        assert!(PortForward::parse(ForwardKind::Local, "8080", "x").is_err());
+        assert!(PortForward::parse(ForwardKind::Local, "8080", ":80").is_err());
     }
 
     #[test]

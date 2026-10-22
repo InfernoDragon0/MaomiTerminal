@@ -13,8 +13,10 @@ use gpui_kit::{
     App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, Subscription, WeakEntity, Window, div, px,
 };
-use maomi_config::{Host, HostAuth};
-use maomi_ssh::{AuthMethod, ConnectOptions, KeyboardPrompt, KnownHosts, Prompt, SshError, Trust};
+use maomi_config::{ForwardKind, Host, HostAuth, PortForward, RouteError};
+use maomi_ssh::{
+    AuthMethod, ConnectOptions, Forward, KeyboardPrompt, KnownHosts, Login, Prompt, SshError, Trust,
+};
 use maomi_term::{PtySession, SessionOptions};
 use maomi_vault::{Entry, EntryKind, ExposeSecret as _, SecretString};
 use zeroize::Zeroizing;
@@ -30,12 +32,7 @@ pub(crate) fn known_hosts() -> Option<KnownHosts> {
 
 /// Shell name of a pane connected to `host`.
 pub(crate) fn label(host: &Host) -> String {
-    let name = if host.name.trim().is_empty() {
-        &host.host
-    } else {
-        &host.name
-    };
-    format!("ssh {name}")
+    format!("ssh {}", hosts::display_name(host))
 }
 
 /// An empty session for a pane that is still connecting.
@@ -53,13 +50,16 @@ pub(crate) fn connect(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let Some(host) = hosts::host(&host_id, cx) else {
-        set_connection(
-            &view,
-            Connection::Failed("This host was deleted".into()),
-            cx,
-        );
-        return;
+    let route = match hosts::route(&host_id, cx) {
+        Ok(route) => route,
+        Err(err) => {
+            let reason = match err {
+                RouteError::Missing => "This host or one of its jump hosts was deleted",
+                RouteError::Loop => "The jump hosts lead back to a host already on the way",
+            };
+            set_connection(&view, Connection::Failed(reason.into()), cx);
+            return;
+        }
     };
     let reconnect = {
         let (host_id, view) = (host_id.clone(), view.clone());
@@ -69,10 +69,13 @@ pub(crate) fn connect(
     };
     _ = view.update(cx, |view, _| view.set_reconnect(reconnect));
 
-    let needs_vault = (host.auth == HostAuth::Key && host.key_id.is_some())
-        || (host.auth == HostAuth::Password && host.password_saved);
+    let needs_vault = route.iter().any(|host| {
+        (host.auth == HostAuth::Key && host.key_id.is_some())
+            || (host.auth == HostAuth::Password && host.password_saved)
+    });
     if !needs_vault {
-        start(host, Vec::new(), view, window, cx);
+        let saved = route.iter().map(|_| Vec::new()).collect();
+        start(route, saved, view, window, cx);
         return;
     }
     // Stays if the unlock dialog is cancelled, so Enter tries again.
@@ -82,16 +85,24 @@ pub(crate) fn connect(
         cx,
     );
     vault::unlock(window, cx, move |window, cx| {
-        let saved = vault::with_vault(cx, |v| saved_login(&host, v)).flatten();
-        match saved {
-            Some(saved) => start(host, saved, view, window, cx),
-            None if host.auth == HostAuth::Key => set_connection(
-                &view,
-                Connection::Failed("The key for this host is missing from the vault".into()),
-                cx,
-            ),
-            None => start(host, Vec::new(), view, window, cx),
+        let saved = vault::with_vault(cx, |v| {
+            route.iter().map(|h| saved_login(h, v)).collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| route.iter().map(|_| None).collect());
+        let missing_key = route
+            .iter()
+            .zip(&saved)
+            .find(|(host, saved)| host.auth == HostAuth::Key && saved.is_none());
+        if let Some((host, _)) = missing_key {
+            let reason = format!(
+                "The key for {} is missing from the vault",
+                hosts::display_name(host)
+            );
+            set_connection(&view, Connection::Failed(reason.into()), cx);
+            return;
         }
+        let saved = saved.into_iter().map(Option::unwrap_or_default).collect();
+        start(route, saved, view, window, cx);
     });
 }
 
@@ -100,67 +111,124 @@ fn saved_login(host: &Host, vault: &mut maomi_vault::Vault) -> Option<Vec<AuthMe
     let entry = match host.auth {
         HostAuth::Key => host.key_id.as_deref()?,
         HostAuth::Password => &host.password_entry(),
+        HostAuth::Agent => return None,
     };
     let secret = Zeroizing::new(vault.get(entry)?.secret.expose_secret().to_owned());
-    Some(vec![match host.auth {
-        HostAuth::Key => AuthMethod::PrivateKey {
+    Some(vec![if host.auth == HostAuth::Key {
+        AuthMethod::PrivateKey {
             key: secret,
             passphrase: None,
-        },
-        HostAuth::Password => AuthMethod::Password(Some(secret)),
+        }
+    } else {
+        AuthMethod::Password(Some(secret))
     }])
 }
 
+/// Connects along `route` (jump hosts, then the target) with each hop's saved login.
 fn start(
-    host: Host,
-    saved: Vec<AuthMethod>,
+    route: Vec<Host>,
+    saved: Vec<Vec<AuthMethod>>,
     view: WeakEntity<TerminalView>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let Some(size) = view.upgrade().map(|v| v.read(cx).session().size()) else {
+    let (Some(size), Some(target)) = (
+        view.upgrade().map(|v| v.read(cx).session().size()),
+        route.last().cloned(),
+    ) else {
         return;
     };
-    set_connection(
-        &view,
-        Connection::Connecting(format!("Connecting to {}…", host.address()).into()),
-        cx,
-    );
-    let mut auth = saved;
-    if host.auth == HostAuth::Password {
-        // A saved password that stopped working falls back to asking.
-        auth.push(AuthMethod::Password(None));
-        auth.push(AuthMethod::KeyboardInteractive);
-    }
+    let via: Vec<String> = route[..route.len() - 1]
+        .iter()
+        .map(hosts::display_name)
+        .collect();
+    let connecting = if via.is_empty() {
+        format!("Connecting to {}…", target.address())
+    } else {
+        format!(
+            "Connecting to {} via {}…",
+            target.address(),
+            via.join(" \u{2192} ")
+        )
+    };
+    set_connection(&view, Connection::Connecting(connecting.into()), cx);
+    let use_agent = settings::config(cx).ssh.use_agent;
+    let logins = route
+        .iter()
+        .zip(saved)
+        .map(|(host, saved)| {
+            let mut auth = Vec::new();
+            if use_agent || host.auth == HostAuth::Agent {
+                auth.push(AuthMethod::Agent);
+            }
+            auth.extend(saved);
+            if host.auth != HostAuth::Key {
+                // A saved password that stopped working, or an agent without the right key,
+                // falls back to asking.
+                auth.push(AuthMethod::Password(None));
+                auth.push(AuthMethod::KeyboardInteractive);
+            }
+            Login {
+                host: host.host.clone(),
+                port: host.port,
+                user: host.user.clone(),
+                auth,
+            }
+        })
+        .collect();
     let options = ConnectOptions {
-        host: host.host.clone(),
-        port: host.port,
-        user: host.user.clone(),
-        auth,
+        route: logins,
+        forwards: target.forwards.iter().map(ssh_forward).collect(),
+        forward_agent: target.forward_agent,
         session: SessionOptions {
             size,
             ..settings::session_options(&settings::config(cx))
         },
-        label: label(&host),
+        label: label(&target),
     };
 
     let (prompts, questions) = async_channel::unbounded::<Prompt>();
     let handle = window.window_handle();
-    {
-        let host = host.clone();
-        cx.spawn(async move |cx| {
-            while let Ok(prompt) = questions.recv().await {
-                let host = host.clone();
-                _ = handle.update(cx, |_, window, cx| ask(prompt, host, window, cx));
-            }
-        })
-        .detach();
-    }
+    let route = Rc::new(route);
+    cx.spawn(async move |cx| {
+        while let Ok(prompt) = questions.recv().await {
+            let route = route.clone();
+            _ = handle.update(cx, |_, window, cx| ask(prompt, &route, window, cx));
+        }
+    })
+    .detach();
 
-    let host_id = host.id.clone();
+    let host_id = target.id.clone();
     cx.spawn(async move |cx| {
         let result = maomi_ssh::connect(options, prompts).await;
         cx.update(|cx| {
+            let result = result.map(|shell| {
+                let failed: Vec<String> = target
+                    .forwards
+                    .iter()
+                    .zip(&shell.forwards)
+                    .filter_map(|(f, r)| r.as_ref().err().map(|e| format!("{}: {e}", f.summary())))
+                    .collect();
+                if !failed.is_empty() {
+                    _ = handle.update(cx, |_, window, cx| {
+                        window.push_notification(
+                            Notification::error(format!(
+                                "Port forwards not started:\n{}",
+                                failed.join("\n")
+                            )),
+                            cx,
+                        );
+                    });
+                }
+                let states = target
+                    .forwards
+                    .iter()
+                    .cloned()
+                    .zip(shell.forwards)
+                    .collect();
+                hosts::set_forwards(&host_id, states, cx);
+                shell.session
+            });
             let status = match &result {
                 Ok(_) => HostStatus::Connected,
                 Err(_) => HostStatus::Error,
@@ -180,13 +248,34 @@ fn start(
     .detach();
 }
 
+fn ssh_forward(forward: &PortForward) -> Forward {
+    let (bind, port) = (forward.bind.clone(), forward.port);
+    let (host, host_port) = (forward.host.clone(), forward.host_port);
+    match forward.kind {
+        ForwardKind::Local => Forward::Local {
+            bind,
+            port,
+            host,
+            host_port,
+        },
+        ForwardKind::Remote => Forward::Remote {
+            bind,
+            port,
+            host,
+            host_port,
+        },
+        ForwardKind::Dynamic => Forward::Dynamic { bind, port },
+    }
+}
+
 fn set_connection(view: &WeakEntity<TerminalView>, connection: Connection, cx: &mut App) {
     _ = view.update(cx, |view, cx| view.set_connection(Some(connection), cx));
 }
 
 /// Answers one prompt, with a dialog unless the answer is already known. Closing the dialog
-/// drops the reply, which cancels the connection.
-fn ask(prompt: Prompt, host: Host, window: &mut Window, cx: &mut App) {
+/// drops the reply, which cancels the connection. `route` names the host each hop is.
+fn ask(prompt: Prompt, route: &[Host], window: &mut Window, cx: &mut App) {
+    let hop_host = |hop: usize| route.get(hop).or(route.last()).cloned().unwrap_or_default();
     match prompt {
         Prompt::HostKey { key, reply } => {
             let known = known_hosts();
@@ -246,10 +335,12 @@ fn ask(prompt: Prompt, host: Host, window: &mut Window, cx: &mut App) {
             );
         }
         Prompt::Password {
+            hop,
             user,
             host: name,
             reply,
         } => {
+            let host = hop_host(hop);
             let field = masked("Password", window, cx);
             open(
                 PromptDialog {
@@ -272,15 +363,19 @@ fn ask(prompt: Prompt, host: Host, window: &mut Window, cx: &mut App) {
                 cx,
             );
         }
-        Prompt::KeyPassphrase { retry, reply } => {
+        Prompt::KeyPassphrase { hop, retry, reply } => {
+            let host = hop_host(hop);
             let field = masked("Passphrase", window, cx);
             open(
                 PromptDialog {
                     title: "Key passphrase".into(),
                     sub: if retry {
-                        "Wrong passphrase. Try again."
+                        "Wrong passphrase. Try again.".to_owned()
                     } else {
-                        "The private key for this host is encrypted."
+                        format!(
+                            "The private key for {} is encrypted.",
+                            hosts::display_name(&host)
+                        )
                     }
                     .into(),
                     mono: None,
@@ -298,6 +393,7 @@ fn ask(prompt: Prompt, host: Host, window: &mut Window, cx: &mut App) {
             );
         }
         Prompt::KeyboardInteractive {
+            hop,
             name,
             instructions,
             prompts,
@@ -315,7 +411,7 @@ fn ask(prompt: Prompt, host: Host, window: &mut Window, cx: &mut App) {
                 })
                 .collect();
             let title = if name.trim().is_empty() {
-                format!("{} asks", host.address())
+                format!("{} asks", hop_host(hop).address())
             } else {
                 name
             };
