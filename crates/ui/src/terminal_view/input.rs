@@ -258,7 +258,9 @@ pub(crate) enum LinkTarget {
     Path(PathBuf),
 }
 
-const SCHEMES: [&str; 5] = ["https://", "http://", "file://", "mailto:", "ftp://"];
+const SCHEMES: [&str; 6] = [
+    "https://", "http://", "file://", "mailto:", "ftp://", "maomi://",
+];
 
 /// Rows looked at around the pointer for one wrapped line, so a huge line stays cheap.
 const MAX_WRAPPED_ROWS: usize = 32;

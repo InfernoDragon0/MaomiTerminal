@@ -110,9 +110,11 @@ impl Standalone {
                         this.close_confirmed = true;
                         window.remove_window();
                     }
-                    // The tab handles these (Reattach also closes this window); one pane per
-                    // window, so splits, drops and detaching do not apply.
+                    // The tab handles these (Reattach also closes this window; a board link opens
+                    // in the tab's window); one pane per window, so splits, drops and detaching
+                    // do not apply.
                     PaneEvent::Reattach
+                    | PaneEvent::OpenDeepLink(_)
                     | PaneEvent::Closed
                     | PaneEvent::SplitRight
                     | PaneEvent::SplitDown

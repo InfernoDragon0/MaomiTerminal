@@ -11,10 +11,12 @@
 use std::io;
 use std::path::PathBuf;
 
+mod deeplink;
 mod plan;
 mod store;
 mod watch;
 
+pub use deeplink::{DESKTOP_LINK_SCHEME, DeepLink, is_desktop_link, parse_desktop_link};
 pub use plan::{
     Activity, Agent, Card, CardType, Column, Note, Plan, PlanStatus, ProjectSettings, ReviewPolicy,
     ReviewRequest, Size, Task,

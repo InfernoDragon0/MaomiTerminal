@@ -640,7 +640,13 @@ impl TerminalElement {
                     if let Some(link) = input::link_at(&snapshot, row, col)
                         && let LinkTarget::Url(url) = link.target
                     {
-                        cx.open_url(&url);
+                        // Workbench board links open in the app, not through the OS.
+                        if maomi_workbench::is_desktop_link(&url) {
+                            _ = view
+                                .update(cx, |_, cx| cx.emit(TerminalViewEvent::OpenDeepLink(url)));
+                        } else {
+                            cx.open_url(&url);
+                        }
                         return;
                     }
                     if let Some(link) =

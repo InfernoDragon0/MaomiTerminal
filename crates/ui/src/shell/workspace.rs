@@ -33,6 +33,7 @@ use super::workbench::{WorkbenchEvent, WorkbenchPanel};
 use super::{LaunchOptions, actions::*};
 use crate::updates::{self, UpdateState};
 use crate::{Mode, Palette, Skin, TerminalViewEvent, Theme, set_theme, settings};
+use maomi_workbench::DeepLink;
 
 struct Tab {
     id: u64,
@@ -637,6 +638,64 @@ impl Workspace {
         panel.update(cx, |panel, cx| panel.follow_dir(dir, window, cx));
     }
 
+    /// A Ctrl+clicked `maomi:` link. Board links open here; other valid links go to the OS (the
+    /// Workbench desktop app), and so does a plan this app cannot find. An invalid link does
+    /// nothing: links are untrusted input.
+    fn open_deep_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(link) = maomi_workbench::parse_desktop_link(url) else {
+            tracing::warn!("ignored an invalid maomi link");
+            return;
+        };
+        let DeepLink::Plan {
+            project,
+            plan,
+            card,
+        } = link
+        else {
+            cx.open_url(url);
+            return;
+        };
+        let url = url.to_owned();
+        let find = cx.background_executor().spawn(async move {
+            maomi_workbench::projects()
+                .into_iter()
+                .find(|found| found.key == project)
+                .map(|found| found.board_dir.join(format!("{plan}.json")))
+                .filter(|path| path.is_file())
+        });
+        cx.spawn_in(window, async move |ws, cx| {
+            let found = find.await;
+            ws.update_in(cx, |ws, window, cx| match found {
+                Some(path) => ws.show_plan(path, card, window, cx),
+                None => cx.open_url(&url),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens a plan's board in the centre and, with `card`, that card's drawer.
+    fn show_plan(
+        &mut self,
+        plan: PathBuf,
+        card: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_board(plan.clone(), window, cx);
+        match card {
+            Some(card) => {
+                self.set_board_card(Some(card.clone()), cx);
+                self.card_drawer
+                    .update(cx, |drawer, cx| drawer.show(plan, card, cx));
+            }
+            None => {
+                self.card_drawer.update(cx, |drawer, cx| drawer.close(cx));
+                self.set_board_card(None, cx);
+            }
+        }
+    }
+
     /// Outlines the card the drawer shows on the board.
     fn set_board_card(&mut self, card: Option<String>, cx: &mut Context<Self>) {
         if let Some(page) = &self.board_page {
@@ -752,6 +811,7 @@ impl Workspace {
             PaneEvent::Detach => self.detach_pane(pane, window, cx),
             PaneEvent::Reattach => self.reattach_pane(pane, window, cx),
             PaneEvent::ExitedCleanly => self.close_pane(pane, true, window, cx),
+            PaneEvent::OpenDeepLink(url) => self.open_deep_link(url, window, cx),
         }
     }
 

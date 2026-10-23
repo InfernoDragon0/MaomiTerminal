@@ -48,6 +48,8 @@ pub enum PaneEvent {
     /// The shell exited with code 0; the pane goes away. Other codes keep the pane open
     /// with the restart banner so the error stays readable.
     ExitedCleanly,
+    /// A `maomi:` link in the output was Ctrl+clicked.
+    OpenDeepLink(String),
 }
 
 pub struct Pane {
@@ -551,6 +553,10 @@ impl Pane {
                 self.needs_you = false;
             }
             TerminalViewEvent::OpenFolder(_) => return,
+            TerminalViewEvent::OpenDeepLink(url) => {
+                cx.emit(PaneEvent::OpenDeepLink(url.clone()));
+                return;
+            }
             TerminalViewEvent::Restarted => {
                 self.exited = false;
                 self.agent = None;

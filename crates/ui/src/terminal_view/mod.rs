@@ -70,6 +70,8 @@ pub enum TerminalViewEvent {
     Restarted,
     /// A folder path in the output was Ctrl+clicked.
     OpenFolder(PathBuf),
+    /// A `maomi:` link was Ctrl+clicked; the workspace decides what it opens.
+    OpenDeepLink(String),
     /// A remote pane's connection opened; [`TerminalView::ssh_handle`] has it.
     Connected,
 }
