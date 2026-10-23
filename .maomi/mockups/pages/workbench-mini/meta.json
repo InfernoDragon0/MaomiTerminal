@@ -1,0 +1,24 @@
+{
+  "id": "workbench-mini",
+  "title": "Workbench mini board (dock)",
+  "status": "draft",
+  "version": 1,
+  "versions": [
+    {
+      "v": 1,
+      "at": 1792750604752,
+      "bytes": 10981,
+      "by": "9fdb49c9-0a03-4424-80ef-b5e270cf37f8"
+    }
+  ],
+  "createdAt": 1792750604752,
+  "updatedAt": 1792750604752,
+  "plans": [
+    {
+      "plan": "p-mvkoo3cvccbh",
+      "milestone": "m-mvkoo3cxvz48"
+    }
+  ],
+  "plan": "p-mvkoo3cvccbh",
+  "milestone": "m-mvkoo3cxvz48"
+}

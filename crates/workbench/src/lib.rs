@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 mod deeplink;
 mod plan;
+mod prompt;
 mod store;
 mod watch;
 
@@ -21,6 +22,7 @@ pub use plan::{
     Activity, Agent, Card, CardType, Column, Note, Plan, PlanStatus, ProjectSettings, ReviewPolicy,
     ReviewRequest, Size, Task,
 };
+pub use prompt::card_prompt;
 pub use store::{
     PlanSummary, Project, activity_path, list_plans, projects, projects_in, read_activity,
     read_plan, read_plans, read_settings, workbench_home,

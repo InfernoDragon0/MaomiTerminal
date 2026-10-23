@@ -301,21 +301,26 @@ impl BoardPage {
             );
 
         if working {
-            // Aurora ring: the gradient shows through a 1px gap around the card.
-            div()
-                .p(px(1.))
-                .rounded(px(11.))
-                .bg(linear_gradient(
-                    90.,
-                    linear_color_stop(p.gradient[0].to_hsla(), 0.),
-                    linear_color_stop(p.gradient[3].to_hsla(), 1.),
-                ))
-                .child(face)
-                .into_any_element()
+            aurora_ring(face, 10., p)
         } else {
             face.into_any_element()
         }
     }
+}
+
+/// The aurora ring of a card being worked on: the gradient shows through a 1px gap around
+/// `face`, whose corners have `radius`.
+pub(super) fn aurora_ring(face: impl IntoElement, radius: f32, p: &Palette) -> AnyElement {
+    div()
+        .p(px(1.))
+        .rounded(px(radius + 1.))
+        .bg(linear_gradient(
+            90.,
+            linear_color_stop(p.gradient[0].to_hsla(), 0.),
+            linear_color_stop(p.gradient[3].to_hsla(), 1.),
+        ))
+        .child(face)
+        .into_any_element()
 }
 
 impl Render for BoardPage {
@@ -964,7 +969,7 @@ fn model_tag(model: &str, p: &Palette) -> impl IntoElement {
         .child(model.to_owned())
 }
 
-fn size_tag(size: &str, p: &Palette) -> impl IntoElement {
+pub(super) fn size_tag(size: &str, p: &Palette) -> impl IntoElement {
     div()
         .px(px(6.))
         .rounded(px(6.))
@@ -986,7 +991,7 @@ fn meta(icon: AssetIcon, text: String) -> impl IntoElement {
 }
 
 /// Assignee initials: Claude session ids, or "user" for the person.
-fn avatars(ids: &[String], p: &Palette) -> impl IntoElement {
+pub(super) fn avatars(ids: &[String], p: &Palette) -> impl IntoElement {
     div()
         .flex()
         .children(ids.iter().take(3).enumerate().map(|(i, id)| {
@@ -1021,7 +1026,7 @@ fn dot(color: Hsla, size: f32) -> impl IntoElement {
         .bg(color)
 }
 
-fn bar(pct: u32, height: f32, p: &Palette) -> impl IntoElement {
+pub(super) fn bar(pct: u32, height: f32, p: &Palette) -> impl IntoElement {
     let fill = if pct >= 100 { p.ok } else { p.accent };
     div()
         .flex_1()

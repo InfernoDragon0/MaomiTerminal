@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en" data-theme="aurora-dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workbench mini board</title>
+<link rel="stylesheet" href="../../_system/tokens.css">
+<link rel="stylesheet" href="../../_system/components.css">
+<style>
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 "Segoe UI", system-ui, sans-serif; }
+button { font: inherit; }
+.top { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.top h1 { flex: 1; margin: 0; font-size: 15px; font-weight: 600; color: var(--fg-emph); }
+.compare { display: flex; gap: 28px; padding: 18px; overflow-x: auto; }
+.option { display: grid; gap: 8px; flex: none; }
+.option .cap { font-size: 12px; font-weight: 600; color: var(--fg-emph); }
+.option .why { max-width: 300px; font-size: 12px; color: var(--muted); }
+.frame { display: flex; height: 660px; border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden; }
+.term { width: 260px; padding: 10px 12px; font: 12px/1.6 "Cascadia Code", Consolas, monospace; color: var(--fg); background: var(--surface); }
+.term .dim { color: var(--muted); }
+
+/* The dock: same 280 px panel as the Workbench tree. */
+.dock { display: flex; flex-direction: column; gap: 10px; width: 280px; padding: 12px 10px; background: var(--bg); border-right: 1px solid var(--line); }
+.dhead { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; font-size: 12px; font-weight: 600; letter-spacing: .6px; color: var(--muted); }
+.dhead .seg button { padding: 2px 10px; font-size: 11.5px; }
+.plan { display: grid; gap: 4px; padding: 0 4px; }
+.plan .row1 { display: flex; align-items: center; gap: 8px; }
+.plan .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg-emph); }
+.plan .pct { font-size: 11px; color: var(--muted); }
+.plan .field { width: 100%; }
+.bar { position: relative; height: 3px; overflow: hidden; background: var(--surface-3); border-radius: 99px; }
+.bar > i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 99px; }
+.bar.ok > i { background: var(--ok); }
+.scroll { flex: 1; min-height: 0; overflow: auto; }
+
+/* A: stacked columns. */
+.sect { margin-top: 4px; }
+.shead { display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 6px; font-size: 12px; color: var(--muted); border-radius: 8px; cursor: pointer; user-select: none; }
+.shead:hover { background: var(--surface-2); }
+.shead .chev { width: 12px; transition: transform .12s; }
+.sect.open .shead .chev { transform: rotate(90deg); }
+.shead .sw { width: 7px; height: 7px; border-radius: 50%; background: var(--colc); }
+.shead .nm { flex: 1; }
+.shead .n { padding: 0 6px; font-size: 10.5px; background: var(--surface-2); border-radius: 99px; }
+.sect .cards { display: none; gap: 4px; padding: 2px 0 6px 18px; }
+.sect.open .cards { display: grid; }
+[data-c="backlog"] { --colc: var(--muted); }
+[data-c="in-progress"] { --colc: var(--now); }
+[data-c="review"] { --colc: var(--warn); }
+[data-c="blocked"] { --colc: var(--err); }
+[data-c="done"] { --colc: var(--ok); }
+
+/* Compact card row (both options). */
+.mc { position: relative; display: grid; gap: 4px; padding: 6px 8px 7px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; cursor: grab; }
+.mc:hover { background: var(--surface-3); }
+.mc.working::before { content: ""; position: absolute; inset: -1px; padding: 1px; border-radius: 8px; background: var(--aurora); -webkit-mask: linear-gradient(var(--bg) 0 0) content-box, linear-gradient(var(--bg) 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
+.mc .l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mc .ty { flex: none; width: 7px; height: 7px; border-radius: 2px; background: var(--tc); }
+.mc .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-emph); }
+.mc .sz { flex: none; padding: 0 5px; font-size: 10px; font-weight: 600; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 5px; }
+.mc .l2 { display: flex; align-items: center; gap: 6px; }
+.mc .l2 .bar { flex: 1; }
+.av { display: inline-grid; place-items: center; width: 15px; height: 15px; font-size: 8.5px; font-weight: 700; color: var(--on-accent); background: var(--accent); border-radius: 50%; }
+
+/* B: horizontal strip of narrow columns that scrolls sideways. */
+.strip { display: flex; gap: 6px; flex: 1; min-height: 0; overflow-x: auto; padding-bottom: 4px; }
+.lane { display: flex; flex-direction: column; flex: none; width: 150px; min-height: 0; background: var(--surface); border: 1px solid var(--line); border-top: 2px solid var(--colc); border-radius: 9px; }
+.lane .lh { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 11.5px; font-weight: 600; color: var(--fg-emph); }
+.lane .lh .n { margin-left: auto; font-weight: 400; color: var(--muted); }
+.lane .lb { display: grid; align-content: start; gap: 4px; padding: 0 5px 6px; overflow-y: auto; }
+.lane .mc .sz { display: none; }
+.lane.empty .lb::after { content: "No cards"; padding: 8px; font-size: 11px; color: var(--muted); text-align: center; border: 1px dashed var(--line-strong); border-radius: 8px; }
+.hint { padding: 0 4px; font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Mini board in the Workbench dock: two layouts</h1>
+  <div class="seg" role="group" aria-label="Skin"><button data-skin="aurora" class="on">Aurora</button><button data-skin="onyx">Onyx</button><button data-skin="mochi">Mochi</button></div>
+  <div class="seg" role="group" aria-label="Mode"><button data-mode="dark" class="on">Dark</button><button data-mode="light">Light</button></div>
+</div>
+<div class="compare">
+  <div class="option">
+    <div class="cap">A · Stacked columns</div>
+    <div class="why">Columns become sections down the dock, like the tree. Every card gets the full dock width, so titles stay readable. Done starts collapsed.</div>
+    <div class="frame"><aside class="dock" id="dock-a"></aside><div class="term"><span class="dim">PS F:\…\MaomiTerminal&gt;</span> claude<br><span class="dim">&gt;</span> █</div></div>
+  </div>
+  <div class="option">
+    <div class="cap">B · Horizontal strip</div>
+    <div class="why">A tiny version of the board: five narrow columns side by side that scroll sideways. Looks like the full board, but titles get cut short and you see about 1.7 columns at a time.</div>
+    <div class="frame"><aside class="dock" id="dock-b"></aside><div class="term"><span class="dim">PS F:\…\MaomiTerminal&gt;</span> claude<br><span class="dim">&gt;</span> █</div></div>
+  </div>
+</div>
+<script>
+(function () {
+  var root = document.documentElement, skin = "aurora", mode = "dark";
+  var q = new URLSearchParams(location.search).get("theme");
+  if (q) { root.setAttribute("data-theme", q); skin = q.split("-")[0]; mode = q === "mochi" ? "dark" : (q.split("-")[1] || "dark"); }
+  function apply() {
+    root.setAttribute("data-theme", skin === "mochi" ? "mochi" : skin + "-" + mode);
+    document.querySelectorAll("[data-skin]").forEach(function (b) { b.classList.toggle("on", b.dataset.skin === skin); });
+    document.querySelectorAll("[data-mode]").forEach(function (b) { b.classList.toggle("on", b.dataset.mode === (skin === "mochi" ? "dark" : mode)); });
+  }
+  document.querySelectorAll("[data-skin]").forEach(function (b) { b.onclick = function () { skin = b.dataset.skin; apply(); }; });
+  document.querySelectorAll("[data-mode]").forEach(function (b) { b.onclick = function () { mode = b.dataset.mode; apply(); }; });
+  apply();
+
+  var COLS = [["backlog", "Backlog"], ["in-progress", "In progress"], ["review", "Review"], ["blocked", "Blocked"], ["done", "Done"]];
+  var CARDS = [
+    ["in-progress", "c4", "M", "Left-dock mini board", 0, "9F", true],
+    ["backlog", "c5", "L", "Later: phase 2 edits via MCP child", 0],
+    ["review", "c4", "L", "Kanban board view", 100],
+    ["done", "c3", "M", "maomi-workbench core crate: board reader", 100, "9F"],
+    ["done", "c3", "S", "Board folder watcher", 100, "9F"],
+    ["done", "c1", "M", "Mockup: Workbench boards page", 100, "9F"],
+    ["done", "c4", "M", "Rail icon + Workbench dock + board page shell", 100],
+    ["done", "c4", "M", "Card drawer (read-only)", 100],
+    ["done", "c4", "S", "Live refresh: watcher to page", 100],
+    ["done", "c4", "M", "Ctrl+click maomi:// board links opens the card", 100],
+    ["done", "c5", "M", "Later: drag tree cards into a terminal", 100]
+  ];
+  function card(c) {
+    return '<div class="mc' + (c[6] ? " working" : "") + '" style="--tc:var(--' + c[1] + ')" title="' + c[3] + ' · drag into a terminal to paste its prompt">' +
+      '<div class="l1"><span class="ty"></span><span class="t">' + c[3] + '</span><span class="sz">' + c[2] + '</span></div>' +
+      '<div class="l2"><div class="bar' + (c[4] === 100 ? " ok" : "") + '"><i style="width:' + c[4] + '%"></i></div>' + (c[5] ? '<span class="av">' + c[5] + '</span>' : "") + "</div></div>";
+  }
+  function head(on) {
+    return '<div class="dhead">WORKBENCH<div class="seg"><button>Tree</button><button class="on">Board</button></div></div>' +
+      '<div class="plan"><select class="field" aria-label="Plan"><option>Workbench boards tab</option><option>MaomiTerminal v1</option></select>' +
+      '<div class="row1"><span class="t">Workbench boards tab</span><span class="pct">82%</span></div><div class="bar"><i style="width:82%"></i></div></div>';
+  }
+  var a = document.getElementById("dock-a");
+  a.innerHTML = head() + '<div class="scroll">' + COLS.map(function (col) {
+    var cs = CARDS.filter(function (c) { return c[0] === col[0]; });
+    var open = col[0] !== "done" && cs.length > 0;
+    return '<div class="sect' + (open ? " open" : "") + '" data-c="' + col[0] + '"><div class="shead"><span class="chev">›</span><span class="sw"></span><span class="nm">' + col[1] + '</span><span class="n">' + cs.length + '</span></div><div class="cards">' + cs.map(card).join("") + "</div></div>";
+  }).join("") + "</div>";
+  a.addEventListener("click", function (e) { var h = e.target.closest(".shead"); if (h) h.parentElement.classList.toggle("open"); });
+
+  var b = document.getElementById("dock-b");
+  b.innerHTML = head() + '<div class="strip">' + COLS.map(function (col) {
+    var cs = CARDS.filter(function (c) { return c[0] === col[0]; });
+    return '<div class="lane' + (cs.length ? "" : " empty") + '" data-c="' + col[0] + '"><div class="lh">' + col[1] + '<span class="n">' + cs.length + '</span></div><div class="lb">' + cs.map(card).join("") + "</div></div>";
+  }).join("") + '</div><div class="hint">Scroll sideways for Review, Blocked and Done →</div>';
+})();
+</script>
+</body>
+</html>

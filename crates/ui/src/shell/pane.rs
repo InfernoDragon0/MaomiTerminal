@@ -21,6 +21,7 @@ use super::agent::{self, AgentState, AgentStatus, StatusRead};
 use super::drawer::{self, DragPreview, DraggedPath, DrawerEvent, FileDrawer};
 use super::standalone::outlined;
 use super::tree::DropZone;
+use super::workbench::DraggedCard;
 use crate::{Palette, TerminalView, TerminalViewEvent, Theme, settings};
 
 /// Drag payload of a pane picked up by its header.
@@ -875,6 +876,11 @@ impl Pane {
                     .min_h_0()
                     .on_drop(cx.listener(|pane, dragged: &DraggedPath, window, cx| {
                         pane.insert_path(&dragged.path, window, cx)
+                    }))
+                    // A Workbench card's prompt, typed without Enter so it can be read first.
+                    .on_drop(cx.listener(|pane, dragged: &DraggedCard, window, cx| {
+                        pane.terminal.read(cx).insert_text(&dragged.prompt);
+                        pane.terminal.focus_handle(cx).focus(window, cx);
                     }))
                     // Files dropped from Explorer / Finder too.
                     .on_drop(cx.listener(|pane, paths: &ExternalPaths, window, cx| {

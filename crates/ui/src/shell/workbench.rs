@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName as AssetIcon;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
@@ -26,6 +25,8 @@ use maomi_workbench::{
     BoardEvent, BoardWatcher, Column, Plan, PlanStatus, Project, ProjectSettings,
 };
 
+use super::board::{aurora_ring, avatars, bar, size_tag};
+use super::drawer::DragPreview;
 use super::snippets::{header, icon_button};
 use crate::{Palette, Theme};
 
@@ -267,6 +268,12 @@ pub(super) fn percent(progress: f64) -> u32 {
     (progress * 100.0).round() as u32
 }
 
+/// Drag payload of a card in the plan tree; a terminal pane types the prompt at its cursor.
+#[derive(Debug, Clone)]
+pub struct DraggedCard {
+    pub prompt: String,
+}
+
 /// What the panel asks the workspace to do.
 pub enum WorkbenchEvent {
     /// Show this plan's board in the centre.
@@ -278,10 +285,10 @@ pub enum WorkbenchEvent {
     Collapse,
 }
 
-type ProjectSelect = SelectState<SearchableVec<SharedString>>;
+type LabelSelect = SelectState<SearchableVec<SharedString>>;
 
 pub struct WorkbenchPanel {
-    project_select: Entity<ProjectSelect>,
+    project_select: Entity<LabelSelect>,
     /// Keys of the projects in the select, in its order.
     project_keys: Vec<String>,
     project: Option<String>,
@@ -292,6 +299,13 @@ pub struct WorkbenchPanel {
     show_archived: bool,
     /// The focused terminal's folder. Its project is shown when it has a board.
     cwd: Option<PathBuf>,
+    /// Board view: the selected plan as stacked columns instead of the tree.
+    mini: bool,
+    plan_select: Entity<LabelSelect>,
+    /// Plans in the plan select, in its order (path and title).
+    plan_items: Vec<(PathBuf, SharedString)>,
+    /// Mini board columns opened or closed against the default (all open but Done).
+    mini_flipped: HashSet<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -302,7 +316,9 @@ impl WorkbenchPanel {
         start(cx);
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter plans and cards"));
         let project_select =
-            cx.new(|cx| ProjectSelect::new(SearchableVec::new(Vec::new()), None, window, cx));
+            cx.new(|cx| LabelSelect::new(SearchableVec::new(Vec::new()), None, window, cx));
+        let plan_select =
+            cx.new(|cx| LabelSelect::new(SearchableVec::new(Vec::new()), None, window, cx));
         let subscriptions = vec![
             cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -325,6 +341,20 @@ impl WorkbenchPanel {
                     }
                 },
             ),
+            cx.subscribe_in(
+                &plan_select,
+                window,
+                |panel, select, event: &SelectEvent<_>, _, cx| {
+                    if !matches!(event, SelectEvent::Confirm(Some(_))) {
+                        return;
+                    }
+                    let row = select.read(cx).selected_index(cx).map(|ix| ix.row);
+                    if let Some((path, _)) = row.and_then(|row| panel.plan_items.get(row)) {
+                        panel.selected_plan = Some(path.clone());
+                        cx.notify();
+                    }
+                },
+            ),
             cx.observe_global_in::<WorkbenchStore>(window, |panel, window, cx| {
                 panel.sync_projects(window, cx)
             }),
@@ -338,6 +368,10 @@ impl WorkbenchPanel {
             selected_plan: None,
             show_archived: false,
             cwd,
+            mini: false,
+            plan_select,
+            plan_items: Vec::new(),
+            mini_flipped: HashSet::new(),
             _subscriptions: subscriptions,
         };
         panel.sync_projects(window, cx);
@@ -369,6 +403,7 @@ impl WorkbenchPanel {
             select.set_selected_index(index.map(IndexPath::new), window, cx)
         });
         self.load_project(cx);
+        self.sync_plans(window, cx);
         cx.notify();
     }
 
@@ -414,7 +449,41 @@ impl WorkbenchPanel {
             self.project_keys = keys;
         }
         self.load_project(cx);
+        self.sync_plans(window, cx);
         cx.notify();
+    }
+
+    /// Refills the plan select (Board view) from the shown project and points it at the
+    /// selected plan. Archived plans are left out, as in the tree by default.
+    fn sync_plans(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let store = cx.global::<WorkbenchStore>();
+        let items: Vec<(PathBuf, SharedString)> = self
+            .board_dir(cx)
+            .and_then(|dir| store.board(&dir))
+            .map(|board| {
+                board
+                    .plans
+                    .iter()
+                    .filter(|e| e.plan.status != PlanStatus::Archived)
+                    .map(|e| (e.path.clone(), e.plan.title.clone().into()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let selected = self.selected_plan(cx);
+        let index = selected
+            .and_then(|s| items.iter().position(|(path, _)| *path == s))
+            .map(IndexPath::new);
+        let changed = items != self.plan_items;
+        let labels: Vec<SharedString> = items.iter().map(|(_, title)| title.clone()).collect();
+        self.plan_select.update(cx, |select, cx| {
+            if changed {
+                select.set_items(SearchableVec::new(labels), window, cx);
+            }
+            if changed || select.selected_index(cx) != index {
+                select.set_selected_index(index, window, cx);
+            }
+        });
+        self.plan_items = items;
     }
 
     fn toggle(&mut self, key: String, cx: &mut Context<Self>) {
@@ -513,6 +582,11 @@ impl WorkbenchPanel {
                     let (plan_path, card_id) = (entry.path.clone(), card.id.clone());
                     let done = card.column == Column::Done;
                     let title: SharedString = card.title.clone().into();
+                    let tip: SharedString =
+                        format!("{title}\nDrag into a terminal to paste its prompt").into();
+                    let drag = DraggedCard {
+                        prompt: maomi_workbench::card_prompt(&plan.id, &card.id, &card.title),
+                    };
                     rows.push(
                         tree_row(SharedString::from(format!("wb-card-{i}-{}", card.id)), 2, p)
                             .h(px(26.))
@@ -521,8 +595,10 @@ impl WorkbenchPanel {
                             .child(div().flex_none().w(px(16.)))
                             .child(dot(color, false))
                             .child(label(card.title.clone()))
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(title.clone()).build(window, cx)
+                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                            .on_drag(drag, move |_, _, _, cx| {
+                                let name = title.clone();
+                                cx.new(|_| DragPreview { name })
                             })
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(WorkbenchEvent::OpenCard {
@@ -564,6 +640,103 @@ impl WorkbenchPanel {
                         cx.notify();
                     }))
                     .child(text)
+                    .into_any_element(),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// Board view: the selected plan's columns stacked down the dock, Done closed by default
+    /// (decision D14).
+    fn render_mini(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let message = |text: &'static str| {
+            div()
+                .px(px(6.))
+                .py(px(8.))
+                .text_size(px(12.))
+                .text_color(p.muted.to_hsla())
+                .child(text)
+                .into_any_element()
+        };
+        let store = cx.global::<WorkbenchStore>();
+        if !store.scanned {
+            return message("Looking for boards\u{2026}");
+        }
+        let Some(path) = self.selected_plan(cx) else {
+            return message("No plans in this project.");
+        };
+        let Some((board, entry)) = store.plan(&path) else {
+            return message("Loading\u{2026}");
+        };
+        let (plan, settings) = (entry.plan.clone(), board.settings.clone());
+        let pct = percent(plan.progress());
+
+        let mut rows: Vec<AnyElement> = vec![
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(6.))
+                .pb(px(4.))
+                .text_size(px(11.))
+                .text_color(p.muted.to_hsla())
+                .child(bar(pct, 3., p))
+                .child(format!("{pct}%"))
+                .into_any_element(),
+        ];
+        for column in Column::ALL {
+            let mut cards: Vec<_> = plan
+                .cards
+                .iter()
+                .filter(|c| shown_column(&c.column) == column)
+                .collect();
+            cards.sort_by(|a, b| a.order.total_cmp(&b.order));
+            let name = column.as_str().to_owned();
+            let open = (column != Column::Done) != self.mini_flipped.contains(&name);
+            rows.push(
+                tree_row(SharedString::from(format!("wb-mini-{name}")), 0, p)
+                    .h(px(26.))
+                    .text_size(px(12.))
+                    .text_color(p.muted.to_hsla())
+                    .child(chevron(open && !cards.is_empty(), p))
+                    .child(dot(column_color(&column, p), true))
+                    .child(label(column_label(&column).to_owned()))
+                    .child(count(cards.len(), p))
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        if !panel.mini_flipped.remove(&name) {
+                            panel.mini_flipped.insert(name.clone());
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+            if !open || cards.is_empty() {
+                continue;
+            }
+            let faces: Vec<AnyElement> = cards
+                .into_iter()
+                .map(|card| {
+                    let color = settings
+                        .card_type(card.type_id.as_deref())
+                        .and_then(|t| slot_color(&t.color, p))
+                        .unwrap_or(p.muted.to_hsla());
+                    mini_card(&plan, card, color, &path, p, cx)
+                })
+                .collect();
+            rows.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .pl(px(18.))
+                    .pt(px(2.))
+                    .pb(px(6.))
+                    .children(faces)
                     .into_any_element(),
             );
         }
@@ -650,8 +823,9 @@ impl WorkbenchPanel {
                     })),
             )
             .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
-            .on_click(cx.listener(move |panel, _, _, cx| {
+            .on_click(cx.listener(move |panel, _, window, cx| {
                 panel.selected_plan = Some(path.clone());
+                panel.sync_plans(window, cx);
                 panel.toggle(key.clone(), cx);
             }))
             .into_any_element()
@@ -661,8 +835,13 @@ impl WorkbenchPanel {
 impl Render for WorkbenchPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Theme::current(cx).palette();
-        let tree = self.render_tree(p, cx);
+        let body = if self.mini {
+            self.render_mini(p, cx)
+        } else {
+            self.render_tree(p, cx)
+        };
         let has_projects = !cx.global::<WorkbenchStore>().projects.is_empty();
+        let mini = self.mini;
         div()
             .flex()
             .flex_col()
@@ -680,19 +859,21 @@ impl Render for WorkbenchPanel {
                 "WORKBENCH",
                 p,
                 vec![
-                    Button::new("wb-open-board")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::new(AssetIcon::SquareKanban))
-                        .label("Open board")
-                        .on_click(cx.listener(|panel, _, _, cx| {
-                            if let Some(path) = panel.selected_plan(cx) {
-                                panel.selected_plan = Some(path.clone());
-                                cx.emit(WorkbenchEvent::OpenBoard(path));
-                                cx.notify();
-                            }
-                        }))
-                        .into_any_element(),
+                    view_switch(mini, p, cx),
+                    icon_button(
+                        "wb-open-board",
+                        Icon::new(AssetIcon::SquareKanban),
+                        "Open the board in the centre",
+                        p,
+                    )
+                    .on_click(cx.listener(|panel, _, _, cx| {
+                        if let Some(path) = panel.selected_plan(cx) {
+                            panel.selected_plan = Some(path.clone());
+                            cx.emit(WorkbenchEvent::OpenBoard(path));
+                            cx.notify();
+                        }
+                    }))
+                    .into_any_element(),
                     icon_button("wb-collapse", IconName::PanelLeftClose, "Collapse dock", p)
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(WorkbenchEvent::Collapse)))
                         .into_any_element(),
@@ -707,7 +888,17 @@ impl Render for WorkbenchPanel {
                             .menu_max_h(px(320.)),
                     ),
                 )
-                .child(Input::new(&self.filter).small().cleanable(true))
+                .map(|d| {
+                    if mini {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .child(Select::new(&self.plan_select).small().menu_max_h(px(320.))),
+                        )
+                    } else {
+                        d.child(Input::new(&self.filter).small().cleanable(true))
+                    }
+                })
             })
             .child(
                 div()
@@ -715,9 +906,123 @@ impl Render for WorkbenchPanel {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(tree),
+                    .child(body),
             )
     }
+}
+
+/// A card on the mini board: type colour, title, size, progress and assignee. Clicking opens
+/// the drawer; dragging it onto a terminal types its prompt, as in the tree.
+fn mini_card(
+    plan: &Plan,
+    card: &maomi_workbench::Card,
+    color: Hsla,
+    plan_path: &Path,
+    p: &Palette,
+    cx: &mut Context<WorkbenchPanel>,
+) -> AnyElement {
+    let working = card.column == Column::InProgress && !card.assignees.is_empty();
+    let title: SharedString = card.title.clone().into();
+    let tip: SharedString = format!("{title}\nDrag into a terminal to paste its prompt").into();
+    let drag = DraggedCard {
+        prompt: maomi_workbench::card_prompt(&plan.id, &card.id, &card.title),
+    };
+    let (plan_path, card_id) = (plan_path.to_owned(), card.id.clone());
+    let hover = p.surface_3.to_hsla();
+    let face = div()
+        .id(SharedString::from(format!("wb-mini-card-{}", card.id)))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .px(px(8.))
+        .pt(px(6.))
+        .pb(px(7.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(if working {
+            gpui_kit::transparent_black()
+        } else {
+            p.line.to_hsla()
+        })
+        .bg(p.surface_2.to_hsla())
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .min_w_0()
+                .text_size(px(12.))
+                .text_color(p.fg_emph.to_hsla())
+                .child(dot(color, false))
+                .child(label(card.title.clone()))
+                .when_some(card.size.as_ref(), |d, size| {
+                    d.child(size_tag(size.as_str(), p))
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(bar(percent(card.progress()), 3., p))
+                .child(avatars(&card.assignees[..card.assignees.len().min(1)], p)),
+        )
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(cx.listener(move |_, _, _, cx| {
+            cx.emit(WorkbenchEvent::OpenCard {
+                plan: plan_path.clone(),
+                card: card_id.clone(),
+            })
+        }))
+        .on_drag(drag, move |_, _, _, cx| {
+            let name = title.clone();
+            cx.new(|_| DragPreview { name })
+        });
+    if working {
+        aurora_ring(face, 8., p)
+    } else {
+        face.into_any_element()
+    }
+}
+
+/// Tree / Board switch in the dock header.
+fn view_switch(mini: bool, p: &Palette, cx: &mut Context<WorkbenchPanel>) -> AnyElement {
+    let option = |id: &'static str, text: &'static str, on: bool, to_mini: bool| {
+        let emph = p.fg_emph.to_hsla();
+        div()
+            .id(id)
+            .px(px(8.))
+            .py(px(1.))
+            .rounded(px(6.))
+            .text_size(px(11.5))
+            .map(|d| {
+                if on {
+                    d.text_color(emph).bg(p.surface.to_hsla())
+                } else {
+                    d.text_color(p.muted.to_hsla())
+                        .cursor_pointer()
+                        .hover(move |s| s.text_color(emph))
+                }
+            })
+            .on_click(cx.listener(move |panel, _, window, cx| {
+                panel.mini = to_mini;
+                panel.sync_plans(window, cx);
+                cx.notify();
+            }))
+            .child(text)
+    };
+    div()
+        .flex()
+        .gap(px(2.))
+        .p(px(2.))
+        .mr(px(2.))
+        .rounded(px(8.))
+        .bg(p.surface_2.to_hsla())
+        .child(option("wb-view-tree", "Tree", !mini, false))
+        .child(option("wb-view-board", "Board", mini, true))
+        .into_any_element()
 }
 
 /// The project whose folder holds `dir` (the deepest one when they nest). Compared without case,
