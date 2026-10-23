@@ -170,7 +170,7 @@ pub(crate) fn inject(shell: &Shell, cmd: &mut CommandBuilder) -> bool {
             }
             true
         }
-        ShellKind::Fish | ShellKind::Sh | ShellKind::Other => false,
+        ShellKind::Fish | ShellKind::Sh | ShellKind::Wsl | ShellKind::Other => false,
     }
 }
 

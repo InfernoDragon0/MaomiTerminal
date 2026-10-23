@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use etcetera::app_strategy::{AppStrategy as _, AppStrategyArgs, choose_native_strategy};
+use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strategy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -16,7 +16,9 @@ mod layout;
 mod snippets;
 
 pub use hosts::{ForwardKind, Host, HostAuth, Hosts, PortForward, RouteError};
-pub use layout::{DrawerLayout, Layout, PaneLayout, TabLayout, WindowBounds, WindowLayout};
+pub use layout::{
+    DrawerLayout, Layout, PaneLayout, ShellLayout, TabLayout, WindowBounds, WindowLayout,
+};
 pub use snippets::{Snippet, Snippets};
 
 const FILE_NAME: &str = "config.json";
@@ -284,12 +286,26 @@ impl Config {
 
 /// The platform config directory for MaomiTerminal.
 fn config_dir() -> Result<PathBuf, ConfigError> {
-    let strategy = choose_native_strategy(AppStrategyArgs {
+    Ok(strategy()?.config_dir())
+}
+
+/// Where agent hooks (the Maomi mod) write each pane's status file; it lives in the cache
+/// folder since nothing in it outlives the panes.
+pub fn agent_status_dir() -> Result<PathBuf, ConfigError> {
+    Ok(strategy()?.cache_dir().join("agent-status"))
+}
+
+/// Panics are written here: release builds have no console to print them to.
+pub fn crash_log_path() -> Result<PathBuf, ConfigError> {
+    Ok(strategy()?.cache_dir().join("crash.log"))
+}
+
+fn strategy() -> Result<impl AppStrategy, ConfigError> {
+    Ok(choose_native_strategy(AppStrategyArgs {
         top_level_domain: String::new(),
         author: "maomi".into(),
         app_name: "MaomiTerminal".into(),
-    })?;
-    Ok(strategy.config_dir())
+    })?)
 }
 
 /// Writes a sibling file then renames it over `path`, so a crash mid-write keeps the old file.

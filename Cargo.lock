@@ -4708,6 +4708,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "which",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4721,8 +4722,12 @@ dependencies = [
  "maomi-ssh",
  "maomi-term",
  "maomi-vault",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
  "sysinfo",
  "tracing",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

@@ -16,6 +16,12 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
-# maomi-term may need unsafe later (PTY / OS handles); swap this for its own [lints] table then.
+[target.'cfg(windows)'.dependencies]
+# Thread and process priorities, process liveness (src/priority.rs, src/process.rs: the only
+# unsafe code here).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+
+# src/priority.rs and src/process.rs allow unsafe for themselves; the rest of the crate keeps
+# the workspace's deny.
 [lints]
 workspace = true

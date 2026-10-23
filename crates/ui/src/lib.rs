@@ -15,6 +15,7 @@ mod terminal;
 mod terminal_view;
 pub mod updates;
 pub mod vault;
+mod window_ext;
 
 use gpui_kit::{App, Global, KeyBinding};
 

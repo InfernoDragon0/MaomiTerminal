@@ -18,6 +18,9 @@ pub(crate) enum ShellMark {
     Prompt(PromptMark),
     /// `CSI ? 9001 h` (true) or `l` (false): the program wants win32-input-mode keys.
     Win32InputMode(bool),
+    /// A desktop notification (`OSC 9 ; text` or `OSC 777 ; notify ; title ; body`), e.g. an
+    /// agent asking for permission.
+    Notify(String),
 }
 
 /// FinalTerm / OSC 133 semantic prompt marks.
@@ -165,9 +168,19 @@ fn parse(payload: &str) -> Option<ShellMark> {
     match code {
         "7" => parse_file_url(rest).map(ShellMark::Cwd),
         "9" => {
-            let path = rest.strip_prefix("9;")?;
-            let path = path.trim_matches('"');
-            (!path.is_empty()).then(|| ShellMark::Cwd(PathBuf::from(path)))
+            if let Some(path) = rest.strip_prefix("9;") {
+                let path = path.trim_matches('"');
+                return (!path.is_empty()).then(|| ShellMark::Cwd(PathBuf::from(path)));
+            }
+            // ConEmu's other OSC 9 commands start with a number (`4;1;50` is progress); any
+            // other text is iTerm2's notification.
+            let command = rest.split(';').next().unwrap_or_default();
+            let is_conemu = !command.is_empty() && command.bytes().all(|b| b.is_ascii_digit());
+            (!is_conemu && !rest.trim().is_empty()).then(|| ShellMark::Notify(rest.to_owned()))
+        }
+        "777" => {
+            let body = rest.strip_prefix("notify;")?;
+            Some(ShellMark::Notify(body.replacen(';', ": ", 1)))
         }
         "133" => parse_prompt_mark(rest).map(ShellMark::Prompt),
         // VS Code's variant: same A-D marks plus `P;Cwd=<path>`.
@@ -202,7 +215,28 @@ fn parse_file_url(url: &str) -> Option<PathBuf> {
     if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
         return Some(PathBuf::from(&path[1..]));
     }
+    if cfg!(windows)
+        && let Some(path) = msys_drive_path(&path)
+    {
+        return Some(path);
+    }
     Some(PathBuf::from(path))
+}
+
+/// Git Bash (MSYS) reports `/c/Users/x` for `C:\Users\x`.
+fn msys_drive_path(path: &str) -> Option<PathBuf> {
+    let rest = path.strip_prefix('/')?;
+    let mut chars = rest.chars();
+    let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+    let tail = chars.as_str();
+    if !(tail.is_empty() || tail.starts_with('/')) {
+        return None;
+    }
+    let tail = if tail.is_empty() { "/" } else { tail };
+    Some(PathBuf::from(format!(
+        "{}:{tail}",
+        drive.to_ascii_uppercase()
+    )))
 }
 
 fn percent_decode(s: &str) -> String {
@@ -253,6 +287,32 @@ mod tests {
     fn osc7_windows_drive() {
         let marks = scan(&[b"\x1b]7;file://pc/C:/Users/me\x07"]);
         assert_eq!(marks, vec![ShellMark::Cwd(PathBuf::from("C:/Users/me"))]);
+    }
+
+    #[test]
+    fn notifications() {
+        let marks = scan(&[
+            b"\x1b]9;Claude needs your permission to use Bash\x07",
+            b"\x1b]9;4;1;50\x07\x1b]777;notify;Claude;Waiting\x1b\\",
+        ]);
+        assert_eq!(
+            marks,
+            vec![
+                ShellMark::Notify("Claude needs your permission to use Bash".into()),
+                ShellMark::Notify("Claude: Waiting".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn msys_drive_paths() {
+        assert_eq!(
+            msys_drive_path("/c/Users/me"),
+            Some(PathBuf::from("C:/Users/me"))
+        );
+        assert_eq!(msys_drive_path("/d"), Some(PathBuf::from("D:/")));
+        assert_eq!(msys_drive_path("/home/me"), None);
+        assert_eq!(msys_drive_path("/tmp"), None);
     }
 
     #[test]

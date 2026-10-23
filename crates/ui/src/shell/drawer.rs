@@ -956,6 +956,9 @@ impl Render for FileDrawer {
             .text_size(px(12.))
             .text_color(p.fg.to_hsla())
             .bg(p.surface_2.to_hsla())
+            // The drawer sits in the pane's bottom-left corner; rounding it keeps the pane's
+            // focus ring visible there (GPUI clips children to a square).
+            .rounded_bl(px(7.))
             // Uploads: files from the OS, or rows of a local drawer.
             .when(remote, |d| {
                 d.drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(accent_soft))

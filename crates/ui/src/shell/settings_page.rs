@@ -4,6 +4,8 @@
 //! Every control writes straight into the config through [`settings::update_config`]; windows
 //! observe the config and re-apply it, so changes show everywhere at once.
 
+use std::ffi::OsStr;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::searchable_list::SearchableVec;
@@ -89,9 +91,15 @@ impl SettingsPage {
             .program
             .as_ref()
             .and_then(|program| {
-                shells
-                    .iter()
-                    .position(|s| s.as_ref().is_some_and(|s| s.program == *program))
+                shells.iter().position(|s| {
+                    s.as_ref().is_some_and(|s| {
+                        s.program == *program
+                            && match &config.shell.args {
+                                Some(args) => s.args.iter().eq(args.iter().map(OsStr::new)),
+                                None => has_default_args(s),
+                            }
+                    })
+                })
             })
             .unwrap_or(0);
         let shell = cx.new(|cx| {
@@ -166,10 +174,17 @@ impl SettingsPage {
                 let Some(ix) = labels.iter().position(|l| l == label) else {
                     return;
                 };
-                let program = page.shells[ix].as_ref().map(|s| s.program.clone());
+                let shell = page.shells[ix].clone();
                 settings::update_config(cx, |c| {
-                    c.shell.program = program;
-                    c.shell.args = None;
+                    c.shell.program = shell.as_ref().map(|s| s.program.clone());
+                    // Git Bash and WSL distros need their own arguments; the rest use their
+                    // family's defaults.
+                    c.shell.args = shell.filter(|s| !has_default_args(s)).map(|s| {
+                        s.args
+                            .iter()
+                            .map(|a| a.to_string_lossy().into_owned())
+                            .collect()
+                    });
                 });
             }),
             cx.subscribe_in(&font_size, window, |_, input, event: &InputEvent, _, cx| {
@@ -702,6 +717,10 @@ impl Render for SettingsPage {
                     ),
             )
     }
+}
+
+fn has_default_args(shell: &Shell) -> bool {
+    shell.args == Shell::new(&shell.program).args
 }
 
 /// Labels for the shell select; index 0 names the shell "Automatic" would pick.

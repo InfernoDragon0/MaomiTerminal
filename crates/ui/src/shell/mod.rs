@@ -1,5 +1,6 @@
 //! The app shell: windows, tabs, split panes, activity rail and sessions dock.
 
+mod agent;
 mod drawer;
 mod hosts;
 mod pane;
@@ -8,6 +9,8 @@ mod settings_page;
 mod snippets;
 mod ssh;
 mod ssh_keys;
+mod standalone;
+mod title_strip;
 mod tree;
 mod workspace;
 
@@ -75,6 +78,9 @@ impl Default for LaunchOptions {
 pub(crate) fn init(cx: &mut App) {
     snippets::install(cx);
     hosts::install(cx);
+    // The WSL distro list starts wsl.exe; reading it now keeps the shell menu from waiting.
+    std::thread::spawn(maomi_term::available_shells);
+    std::thread::spawn(agent::sweep_stale);
     let ctx = Some(KEY_CONTEXT);
     let primary = if cfg!(target_os = "macos") {
         "cmd"

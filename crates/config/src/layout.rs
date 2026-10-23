@@ -60,12 +60,23 @@ pub enum PaneLayout {
         /// None = the pane never opened its drawer.
         #[serde(default)]
         drawer: Option<DrawerLayout>,
+        /// None = the default shell from the config.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<ShellLayout>,
     },
     Split {
         /// True = children side by side; false = stacked.
         horizontal: bool,
         children: Vec<PaneLayout>,
     },
+}
+
+/// The shell a pane was opened with (picked from the new-tab menu).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellLayout {
+    pub program: PathBuf,
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 /// A pane's file drawer.
@@ -172,6 +183,7 @@ mod tests {
                 width: 240.,
                 follow: false,
             }),
+            shell: None,
         }
     }
 
@@ -199,7 +211,17 @@ mod tests {
                     TabLayout {
                         root: PaneLayout::Split {
                             horizontal: true,
-                            children: vec![pane("/b"), pane("/c")],
+                            children: vec![
+                                pane("/b"),
+                                PaneLayout::Pane {
+                                    cwd: Some("/c".into()),
+                                    drawer: None,
+                                    shell: Some(ShellLayout {
+                                        program: "wsl.exe".into(),
+                                        args: vec!["-d".into(), "Ubuntu".into()],
+                                    }),
+                                },
+                            ],
                         },
                         focused: 1,
                     },

@@ -79,7 +79,8 @@ fn unicode_unit(key: &str, typed: Option<&str>, m: &Modifiers, alt_gr: bool) -> 
             Some('\\') => 0x1c,
             Some(']') => 0x1d,
             _ => match key {
-                "enter" => 13,
+                // Line feed, like the console: apps such as Claude Code read it as a newline.
+                "enter" => 10,
                 "tab" => 9,
                 "escape" => 27,
                 "backspace" => 8,
@@ -202,6 +203,10 @@ mod tests {
         assert_eq!(
             key("ctrl-c").unwrap(),
             "\x1b[67;0;3;1;8;1_\x1b[67;0;3;0;8;1_"
+        );
+        assert_eq!(
+            key("ctrl-enter").unwrap(),
+            "\x1b[13;0;10;1;8;1_\x1b[13;0;10;0;8;1_"
         );
         assert_eq!(
             key("ctrl-space").unwrap(),

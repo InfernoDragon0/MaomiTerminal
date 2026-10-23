@@ -1,22 +1,27 @@
 //! A window's contents: title bar with tabs, activity rail, sessions dock, split panes and the
 //! status bar. Each window has its own workspace and tab set.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, IconName, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Axis, Context, Entity, EntityId, Focusable as _,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PathPromptOptions,
-    PromptLevel, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window, WindowBounds, div, linear_color_stop, linear_gradient, px,
+    AnimationExt as _, AnyElement, App, AppContext as _, Axis, Context, Entity, EntityId,
+    Focusable as _, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    PathPromptOptions, PromptLevel, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window, WindowBounds, div, linear_color_stop, linear_gradient, px,
 };
-use maomi_config::{PaneLayout, TabLayout, WindowLayout};
-use maomi_term::{PtySession, SessionOptions};
+use maomi_config::{PaneLayout, ShellLayout, TabLayout, WindowLayout};
+use maomi_term::{PtySession, SessionOptions, Shell, available_shells, default_shell};
 
+use super::agent;
+use super::drawer::DragPreview;
 use super::hosts::{self, HostsEvent, HostsPanel};
 use super::pane::{Pane, PaneEvent, display_path};
 use super::settings_page::SettingsPage;
@@ -58,7 +63,16 @@ pub struct Workspace {
     /// The settings page replaces the dock and panes while shown; created on first open.
     show_settings: bool,
     settings_page: Option<Entity<SettingsPage>>,
+    /// Tabs (by id) whose section in the Sessions dock is collapsed.
+    collapsed: HashSet<u64>,
     _observers: Vec<Subscription>,
+}
+
+/// Drag payload of a Sessions dock row; dropping it on another tab's section moves it there.
+#[derive(Clone)]
+struct DraggedSession {
+    pane: Entity<Pane>,
+    from_tab: u64,
 }
 
 impl Workspace {
@@ -76,6 +90,7 @@ impl Workspace {
             pane_subscriptions: HashMap::new(),
             show_settings: false,
             settings_page: None,
+            collapsed: HashSet::new(),
             _observers: Vec::new(),
         };
         this._observers = vec![
@@ -144,9 +159,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<PaneTree<Entity<Pane>>> {
         match node {
-            PaneLayout::Pane { cwd, drawer } => {
+            PaneLayout::Pane { cwd, drawer, shell } => {
                 let cwd = cwd.filter(|dir| dir.is_dir());
-                let pane = self.spawn_pane(cwd, window, cx)?;
+                // A shell that was uninstalled since falls back to the default one.
+                let shell = shell.filter(|s| s.program.is_file()).map(|s| {
+                    Shell::with_args(s.program, s.args.into_iter().map(Into::into).collect())
+                });
+                let pane = self.spawn_pane(cwd, shell, window, cx)?;
                 if let Some(drawer) = drawer {
                     pane.update(cx, |pane, cx| pane.restore_drawer(drawer, window, cx));
                 }
@@ -184,6 +203,14 @@ impl Workspace {
                 PaneTree::Leaf(pane) => PaneLayout::Pane {
                     cwd: pane.read(cx).cwd().map(PathBuf::from),
                     drawer: pane.read(cx).drawer_layout(cx),
+                    shell: pane.read(cx).picked_shell().map(|s| ShellLayout {
+                        program: s.program.clone(),
+                        args: s
+                            .args
+                            .iter()
+                            .map(|a| a.to_string_lossy().into_owned())
+                            .collect(),
+                    }),
                 },
                 PaneTree::Split { axis, children, .. } => PaneLayout::Split {
                     horizontal: *axis == Axis::Horizontal,
@@ -222,18 +249,24 @@ impl Workspace {
         }
     }
 
+    /// A local shell pane in `cwd`; `shell` (picked from the new-tab menu) overrides the
+    /// configured default.
     fn spawn_pane(
         &mut self,
         cwd: Option<PathBuf>,
+        shell: Option<Shell>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<Pane>> {
         let config = settings::config(cx);
         let base = settings::session_options(&config);
-        let options = SessionOptions {
+        let mut options = SessionOptions {
             cwd: cwd.or_else(|| base.cwd.clone()),
+            shell: shell.clone().or(base.shell.clone()),
             ..base
         };
+        // Agents started in this pane (Claude Code with the Maomi mod) report their state here.
+        options.env.extend(agent::env(&agent::new_pane_id()));
         let session = match PtySession::spawn(options.clone()) {
             Ok(session) => session,
             Err(err) => {
@@ -244,7 +277,9 @@ impl Workspace {
         if let Some(cmd) = &self.launch.run {
             session.write(format!("{cmd}\r"));
         }
-        Some(self.add_pane(session, options, window, cx))
+        let pane = self.add_pane(session, options, window, cx);
+        pane.update(cx, |pane, _| pane.set_picked_shell(shell));
+        Some(pane)
     }
 
     /// A pane for the saved host `host_id`; it shows "Connecting…" until the session opens.
@@ -332,14 +367,19 @@ impl Workspace {
     }
 
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.new_tab_in(None, window, cx);
+        self.new_tab_in(None, None, window, cx);
     }
 
-    /// The new-tab button: asks for the folder first when Settings say so. Cancelling still
-    /// opens the tab, in the startup folder.
-    fn new_tab_from_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The new-tab button and its shell menu (`shell`: None = the default shell): asks for the
+    /// folder first when Settings say so. Cancelling still opens the tab, in the startup folder.
+    fn new_tab_from_button(
+        &mut self,
+        shell: Option<Shell>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !settings::config(cx).shell.pick_folder_for_new_tab {
-            self.new_tab(window, cx);
+            self.new_tab_in(None, shell, window, cx);
             return;
         }
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -353,13 +393,19 @@ impl Workspace {
                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
                 _ => None,
             };
-            _ = ws.update_in(cx, |ws, window, cx| ws.new_tab_in(dir, window, cx));
+            _ = ws.update_in(cx, |ws, window, cx| ws.new_tab_in(dir, shell, window, cx));
         })
         .detach();
     }
 
-    fn new_tab_in(&mut self, cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pane) = self.spawn_pane(cwd, window, cx) else {
+    fn new_tab_in(
+        &mut self,
+        cwd: Option<PathBuf>,
+        shell: Option<Shell>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = self.spawn_pane(cwd, shell, window, cx) else {
             return;
         };
         self.next_id += 1;
@@ -395,9 +441,10 @@ impl Workspace {
         let Some(tab) = self.tab_of(target) else {
             return;
         };
-        // New panes start where the pane they split from is.
+        // New panes start where the pane they split from is, in the same shell.
         let cwd = target.read(cx).cwd().map(PathBuf::from);
-        let Some(pane) = self.spawn_pane(cwd, window, cx) else {
+        let shell = target.read(cx).picked_shell().cloned();
+        let Some(pane) = self.spawn_pane(cwd, shell, window, cx) else {
             return;
         };
         let mut next_id = self.next_id;
@@ -559,7 +606,10 @@ impl Workspace {
             self.active = tab;
             self.tabs[tab].focused = pane.clone();
         }
-        pane.focus_handle(cx).focus(window, cx);
+        // A detached pane takes keys in its own window; here it is only a placeholder.
+        if !pane.read(cx).is_detached() {
+            pane.focus_handle(cx).focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -586,7 +636,12 @@ impl Workspace {
             PaneEvent::PaneDropped(moving, zone) => {
                 self.move_pane(moving, &pane, *zone, window, cx)
             }
+            // A detached pane's own window asks and then reports `Closed`.
+            PaneEvent::Close if pane.read(cx).is_detached() => {}
             PaneEvent::Close => self.close_pane(pane, false, window, cx),
+            PaneEvent::Closed => self.close_pane(pane, true, window, cx),
+            PaneEvent::Detach => self.detach_pane(pane, window, cx),
+            PaneEvent::Reattach => self.reattach_pane(pane, window, cx),
             PaneEvent::ExitedCleanly => self.close_pane(pane, true, window, cx),
         }
     }
@@ -610,11 +665,65 @@ impl Workspace {
             );
             return;
         }
+        let detached = pane.read(cx).detached_window();
+        self.take_pane(&pane, window, cx);
+        if let Some(detached) = detached {
+            _ = detached.update(cx, |_, window, _| window.remove_window());
+        }
+    }
+
+    /// Moves `pane` into a standalone window of its own, with its shell still running.
+    /// The pane stays in its tab, which shows a "Window detached" placeholder, so it can come
+    /// back with [`Self::reattach_pane`].
+    fn detach_pane(&mut self, pane: Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tab_of(&pane) else {
             return;
         };
+        super::standalone::open(pane.clone(), cx.entity().downgrade(), cx);
+        // Keys go to another pane of the tab, if it has one that is still here.
+        let other = self.tabs[tab]
+            .tree
+            .leaves()
+            .into_iter()
+            .find(|p| *p != pane && !p.read(cx).is_detached());
+        if let Some(other) = other {
+            self.focus_pane(&other, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Takes a detached pane back into its tab and closes its window.
+    fn reattach_pane(&mut self, pane: Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detached) = pane.read(cx).detached_window() else {
+            return;
+        };
+        pane.update(cx, |pane, cx| {
+            pane.rehome(window, cx);
+            pane.set_detached(None, cx);
+            pane.set_backdrop_opacity(1., cx);
+            pane.set_text_outline(false, cx);
+        });
+        _ = detached.update(cx, |_, window, _| window.remove_window());
+        window.activate_window();
+        self.focus_pane(&pane, window, cx);
+    }
+
+    /// Focuses `pane`; a detached one brings its window to the front instead.
+    fn reveal_pane(&mut self, pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_pane(pane, window, cx);
+        if let Some(detached) = pane.read(cx).detached_window() {
+            _ = detached.update(cx, |_, window, _| window.activate_window());
+        }
+    }
+
+    /// Takes `pane` out of its tab; the tab (or this window) closes when it was the last one.
+    /// The pane lives on while something else holds it.
+    fn take_pane(&mut self, pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tab_of(pane) else {
+            return;
+        };
         self.pane_subscriptions.remove(&pane.entity_id());
-        if self.tabs[tab].tree.remove(&pane) {
+        if self.tabs[tab].tree.remove(pane) {
             let next = self.tabs[tab].tree.leaves()[0].clone();
             self.tabs[tab].focused = next.clone();
             if tab == self.active {
@@ -624,6 +733,39 @@ impl Workspace {
             self.remove_tab(tab, window, cx);
         }
         cx.notify();
+    }
+
+    /// Moves `pane` (dropped on a tab in the Sessions dock) beside the focused pane of tab
+    /// `to`. The tab it leaves closes when it was its last pane.
+    fn move_pane_to_tab(
+        &mut self,
+        pane: &Entity<Pane>,
+        to: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(from) = self.tab_of(pane) else {
+            return;
+        };
+        if self.tabs[from].id == to || !self.tabs.iter().any(|t| t.id == to) {
+            return;
+        }
+        if self.tabs[from].tree.remove(pane) {
+            self.tabs[from].focused = self.tabs[from].tree.leaves()[0].clone();
+        } else {
+            // Focusing the moved pane below sets `active` again.
+            self.tabs.remove(from);
+        }
+        let Some(target) = self.tabs.iter().position(|t| t.id == to) else {
+            return;
+        };
+        let beside = self.tabs[target].focused.clone();
+        let mut next_id = self.next_id;
+        self.tabs[target]
+            .tree
+            .split(&beside, Axis::Horizontal, pane.clone(), &mut next_id);
+        self.next_id = next_id;
+        self.focus_pane(pane, window, cx);
     }
 
     /// Closes a whole tab, asking first when any of its panes runs a command.
@@ -652,6 +794,10 @@ impl Workspace {
         }
         for pane in t.tree.leaves() {
             self.pane_subscriptions.remove(&pane.entity_id());
+            // The tab's detached panes end with it.
+            if let Some(detached) = pane.read(cx).detached_window() {
+                _ = detached.update(cx, |_, window, _| window.remove_window());
+            }
         }
         self.remove_tab(tab, window, cx);
     }
@@ -708,11 +854,12 @@ impl Workspace {
         if cx.windows().len() == 1 {
             super::save_layout(vec![self.snapshot(window, cx)]);
         }
+        // Detached panes live on in their own windows.
         let busy = self
             .tabs
             .iter()
             .flat_map(|t| t.tree.leaves())
-            .any(|p| p.read(cx).is_busy(cx));
+            .any(|p| !p.read(cx).is_detached() && p.read(cx).is_busy(cx));
         if !busy {
             return true;
         }
@@ -938,9 +1085,10 @@ impl Workspace {
                 )
                 .child(
                     title_button("new-tab", IconName::Plus, "New tab (Ctrl+Shift+T)", p).on_click(
-                        cx.listener(|ws, _, window, cx| ws.new_tab_from_button(window, cx)),
+                        cx.listener(|ws, _, window, cx| ws.new_tab_from_button(None, window, cx)),
                     ),
                 )
+                .child(self.render_shell_menu(cx))
                 .child(div().flex_1().min_w(px(8.)))
                 .when_some(update_pill, |d, pill| d.child(pill))
                 .child(
@@ -974,6 +1122,49 @@ impl Workspace {
                     }),
                 )
                 .child(div().w(px(6.))),
+        )
+    }
+
+    /// The ▾ beside the new-tab button: a new tab in any shell found on the machine. The list
+    /// is read when the menu opens; the default shell is ticked.
+    fn render_shell_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ws = cx.entity().downgrade();
+        div().occlude().child(
+            Button::new("new-tab-shell")
+                .ghost()
+                .xsmall()
+                .icon(IconName::ChevronDown)
+                .tooltip("New tab in another shell")
+                .dropdown_menu(move |menu, _, cx| {
+                    let default = settings::session_options(&settings::config(cx))
+                        .shell
+                        .unwrap_or_else(default_shell);
+                    let mut menu = menu;
+                    for shell in available_shells() {
+                        let checked =
+                            shell.program == default.program && shell.args == default.args;
+                        let ws = ws.clone();
+                        let label = shell.display_name();
+                        menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                            move |_, window, cx| {
+                                let shell = Some(shell.clone());
+                                _ = ws
+                                    .update(cx, |ws, cx| ws.new_tab_from_button(shell, window, cx));
+                            },
+                        ));
+                    }
+                    let ws = ws.clone();
+                    menu.separator()
+                        .item(PopupMenuItem::new("Default shell: Settings…").on_click(
+                            move |_, window, cx| {
+                                _ = ws.update(cx, |ws, cx| {
+                                    if !ws.show_settings {
+                                        ws.toggle_settings(window, cx);
+                                    }
+                                });
+                            },
+                        ))
+                }),
         )
     }
 
@@ -1072,62 +1263,13 @@ impl Workspace {
     }
 
     fn render_dock(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let focused = self.focused_pane();
-        let mut rows: Vec<AnyElement> = Vec::new();
-        for tab in &self.tabs {
-            for pane in tab.tree.leaves() {
-                let data = pane.read(cx);
-                let selected = focused.as_ref() == Some(&pane);
-                let hover = p.surface_2.to_hsla();
-                let dot = if data.has_exited() { p.muted } else { p.ok };
-                let sub = data.cwd().map(display_path).unwrap_or_default();
-                let target = pane.downgrade();
-                rows.push(
-                    div()
-                        .id(("session", pane.entity_id().as_u64() as usize))
-                        .flex()
-                        .items_center()
-                        .gap(px(9.))
-                        .px(px(8.))
-                        .py(px(6.))
-                        .rounded(px(9.))
-                        .text_size(px(12.5))
-                        .text_color(p.fg.to_hsla())
-                        .when(selected, |d| d.bg(hover))
-                        .hover(move |s| s.bg(hover))
-                        .on_click(cx.listener(move |ws, _, window, cx| {
-                            if let Some(pane) = target.upgrade() {
-                                ws.focus_pane(&pane, window, cx);
-                            }
-                        }))
-                        .child(
-                            div()
-                                .flex_none()
-                                .size(px(8.))
-                                .rounded_full()
-                                .bg(dot.to_hsla()),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .gap(px(5.))
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .child(data.shell_name().to_owned())
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(p.muted.to_hsla())
-                                        .text_ellipsis()
-                                        .child(sub),
-                                ),
-                        )
-                        .into_any_element(),
-                );
-            }
-        }
+        let several = self.tabs.len() > 1;
+        let sections: Vec<AnyElement> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| self.render_tab_section(i, tab, p, cx))
+            .collect();
 
         let section_title = |text: &'static str| {
             div()
@@ -1177,11 +1319,317 @@ impl Workspace {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
+                            .gap(px(6.))
                             .mt(px(6.))
-                            .children(rows),
+                            .children(sections),
+                    )
+                    .when(several, |d| {
+                        d.child(
+                            div()
+                                .mt(px(10.))
+                                .px(px(4.))
+                                .text_size(px(11.))
+                                .text_color(p.muted.to_hsla())
+                                .child("Drag a session onto another tab to move it there."),
+                        )
+                    }),
+            )
+    }
+
+    /// One tab's collapsible part of the Sessions dock; it takes sessions dropped from the
+    /// other tabs.
+    fn render_tab_section(
+        &self,
+        index: usize,
+        tab: &Tab,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = tab.id;
+        let active = index == self.active;
+        let collapsed = self.collapsed.contains(&id);
+        let panes = tab.tree.leaves();
+        let title: SharedString = tab.focused.read(cx).title().into();
+        let (hover, tint, ring) = (
+            p.surface_2.to_hsla(),
+            p.accent_soft.to_hsla(),
+            p.accent.to_hsla(),
+        );
+        let header = div()
+            .id(("tab-section", id as usize))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(4.))
+            .py(px(4.))
+            .rounded(px(7.))
+            .cursor_pointer()
+            .text_size(px(11.5))
+            .text_color(p.muted.to_hsla())
+            .hover(move |s| s.bg(hover))
+            .on_click(cx.listener(move |ws, _, _, cx| {
+                if !ws.collapsed.remove(&id) {
+                    ws.collapsed.insert(id);
+                }
+                cx.notify();
+            }))
+            .child(
+                Icon::new(if collapsed {
+                    IconName::ChevronRight
+                } else {
+                    IconName::ChevronDown
+                })
+                .size(px(12.)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .text_color(if active { p.fg_emph } else { p.fg }.to_hsla())
+                    .child(title),
+            )
+            .child(div().flex_none().child(panes.len().to_string()));
+
+        let focused = self.focused_pane();
+        let rows = (!collapsed).then(|| {
+            panes
+                .into_iter()
+                .map(|pane| {
+                    let selected = focused.as_ref() == Some(&pane);
+                    self.render_session_row(pane, id, selected, p, cx)
+                })
+                .collect::<Vec<_>>()
+        });
+        div()
+            .id(("tab-drop", id as usize))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .rounded(px(9.))
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .drag_over::<DraggedSession>(move |style, dragged, _, _| {
+                if dragged.from_tab == id {
+                    style
+                } else {
+                    style.bg(tint).border_color(ring)
+                }
+            })
+            .on_drop(
+                cx.listener(move |ws, dragged: &DraggedSession, window, cx| {
+                    ws.move_pane_to_tab(&dragged.pane, id, window, cx)
+                }),
+            )
+            .child(header)
+            .children(rows.into_iter().flatten())
+            .into_any_element()
+    }
+
+    /// A session in the dock: its status dot matches the pane header's (running colour while a
+    /// command runs, green at the prompt, grey once exited).
+    fn render_session_row(
+        &self,
+        pane: Entity<Pane>,
+        tab: u64,
+        selected: bool,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let data = pane.read(cx);
+        let hover = p.surface_2.to_hsla();
+        let agent = data.agent_status().filter(|_| !data.has_exited());
+        let (dot, detail, detail_color) = if data.has_exited() {
+            (p.muted, "exited".to_owned(), p.muted)
+        } else if agent.is_none() && data.is_detached() {
+            (p.ok, "in its own window".to_owned(), p.muted)
+        } else if let Some(agent) = &agent {
+            let color = agent::color(agent, p);
+            (color, agent.label(), color)
+        } else if data.is_running() {
+            let command = data.command().unwrap_or("running").to_owned();
+            (p.now, command, p.now)
+        } else {
+            let cwd = data.cwd().map(display_path).unwrap_or_default();
+            (p.ok, cwd, p.muted)
+        };
+        let name: SharedString = data.title().into();
+        let shell = data.name().to_owned();
+        let two_lines = data.has_program_title();
+        let dragged = DraggedSession {
+            pane: pane.clone(),
+            from_tab: tab,
+        };
+        let target = pane.downgrade();
+        // Blocked on the user (a permission or a question): the row pulses its colour.
+        let pulse = agent.as_ref().filter(|a| a.pulses()).map(|_| dot.to_hsla());
+        let id = pane.entity_id().as_u64() as usize;
+        let row = div()
+            .id(("session", id))
+            .flex()
+            .items_center()
+            .gap(px(9.))
+            .px(px(8.))
+            .py(px(6.))
+            .rounded(px(9.))
+            .text_size(px(12.5))
+            .text_color(p.fg.to_hsla())
+            .when(selected, |d| d.bg(hover))
+            .hover(move |s| s.bg(hover))
+            .on_drag(dragged, move |_, _, _, cx| {
+                let name = name.clone();
+                cx.new(|_| DragPreview { name })
+            })
+            .on_click(cx.listener(move |ws, _, window, cx| {
+                if let Some(pane) = target.upgrade() {
+                    ws.reveal_pane(&pane, window, cx);
+                }
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(8.))
+                    .rounded_full()
+                    .bg(dot.to_hsla()),
+            )
+            .child(
+                div()
+                    .flex()
+                    // A program's title (Claude's topic) is long: the status goes under it.
+                    .when(two_lines, |d| d.flex_col())
+                    // The smaller detail text would otherwise sit at the top of the line.
+                    .when(!two_lines, |d| d.items_center().gap(px(5.)))
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(div().min_w_0().truncate().child(shell))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_size(px(11.))
+                            .text_color(detail_color.to_hsla())
+                            .text_ellipsis()
+                            .child(detail),
+                    ),
+            );
+        match pulse {
+            Some(color) => row
+                .with_animation(("session-pulse", id), agent::pulse(), move |row, t| {
+                    row.bg(color.opacity(0.06 + 0.2 * t))
+                })
+                .into_any_element(),
+            None => row.into_any_element(),
+        }
+    }
+
+    fn render_tree(
+        &self,
+        tree: &PaneTree<Entity<Pane>>,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match tree {
+            PaneTree::Leaf(pane) if pane.read(cx).is_detached() => {
+                self.render_detached(pane, p, cx)
+            }
+            PaneTree::Leaf(pane) => div()
+                .size_full()
+                .p(px(2.))
+                .child(pane.clone())
+                .into_any_element(),
+            PaneTree::Split { id, axis, children } => {
+                let group = match axis {
+                    Axis::Horizontal => h_resizable(("split", *id as usize)),
+                    Axis::Vertical => v_resizable(("split", *id as usize)),
+                };
+                group
+                    .children(
+                        children
+                            .iter()
+                            .map(|child| resizable_panel().child(self.render_tree(child, p, cx))),
+                    )
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// Where a detached pane sits in its tab: what it is and how to get it back.
+    fn render_detached(
+        &self,
+        pane: &Entity<Pane>,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = pane.entity_id().as_u64() as usize;
+        let name = pane.read(cx).name().to_owned();
+        let (back, show) = (pane.downgrade(), pane.downgrade());
+        div()
+            .size_full()
+            .p(px(2.))
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(p.line_strong.to_hsla())
+                    .bg(p.surface.to_hsla())
+                    .child(
+                        Icon::new(gpui_kit::assets::IconName::SquareArrowOutUpRight)
+                            .size(px(22.))
+                            .text_color(p.muted.to_hsla()),
+                    )
+                    .child(
+                        div()
+                            .text_color(p.fg_emph.to_hsla())
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child("Window detached"),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(320.))
+                            .truncate()
+                            .text_size(px(11.5))
+                            .text_color(p.muted.to_hsla())
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .mt(px(4.))
+                            .child(
+                                Button::new(("bring-back", id))
+                                    .primary()
+                                    .small()
+                                    .label("Bring back")
+                                    .on_click(cx.listener(move |ws, _, window, cx| {
+                                        if let Some(pane) = back.upgrade() {
+                                            ws.reattach_pane(pane, window, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new(("show-window", id))
+                                    .small()
+                                    .label("Show window")
+                                    .on_click(cx.listener(move |ws, _, window, cx| {
+                                        if let Some(pane) = show.upgrade() {
+                                            ws.reveal_pane(&pane, window, cx);
+                                        }
+                                    })),
+                            ),
                     ),
             )
+            .into_any_element()
     }
 
     fn render_status_bar(
@@ -1229,7 +1677,9 @@ impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
         let p = theme.palette();
-        let centre = self.active_tab().map(|tab| render_tree(&tab.tree));
+        let centre = self
+            .active_tab()
+            .map(|tab| self.render_tree(&tab.tree, p, cx));
 
         div()
             .key_context(super::KEY_CONTEXT)
@@ -1311,29 +1761,6 @@ impl Render for Workspace {
                     }),
             )
             .child(self.render_status_bar(theme, p, cx))
-    }
-}
-
-fn render_tree(tree: &PaneTree<Entity<Pane>>) -> AnyElement {
-    match tree {
-        PaneTree::Leaf(pane) => div()
-            .size_full()
-            .p(px(2.))
-            .child(pane.clone())
-            .into_any_element(),
-        PaneTree::Split { id, axis, children } => {
-            let group = match axis {
-                Axis::Horizontal => h_resizable(("split", *id as usize)),
-                Axis::Vertical => v_resizable(("split", *id as usize)),
-            };
-            group
-                .children(
-                    children
-                        .iter()
-                        .map(|child| resizable_panel().child(render_tree(child))),
-                )
-                .into_any_element()
-        }
     }
 }
 

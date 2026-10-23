@@ -21,6 +21,7 @@ use gpui_kit::{
 };
 use maomi_term::{PromptState, PtySession, QueryPalette, Rgb, SessionOptions, TermEvent, TermMode};
 
+pub(crate) use element::OUTLINE_OFFSETS;
 use element::PaneState;
 pub use element::{TerminalElement, TerminalFont};
 
@@ -60,6 +61,10 @@ pub enum TerminalViewEvent {
     CwdChanged(PathBuf),
     PromptChanged(PromptState),
     Bell,
+    /// The program sent a desktop notification (OSC 9 / OSC 777).
+    Notification(String),
+    /// The user typed into the pane.
+    Typed,
     Exited(Option<u32>),
     /// A fresh shell replaced the exited one (Enter on the exit banner).
     Restarted,
@@ -102,6 +107,10 @@ pub struct TerminalView {
     pane: Rc<RefCell<PaneState>>,
     /// Theme whose colours the session last answered colour queries with.
     query_theme: Option<Theme>,
+    /// Alpha of the backdrop behind the text; 0 when the parent paints it.
+    backdrop: f32,
+    /// Overlay text: white default text with a black outline (faded detached windows).
+    text_outline: bool,
     _events: Task<()>,
     _focus: [Subscription; 2],
 }
@@ -127,14 +136,7 @@ impl TerminalView {
         let session = Arc::new(session);
         let events_task = Self::listen(&session, cx);
         let focus_handle = cx.focus_handle();
-        let focus = [
-            cx.on_focus_in(&focus_handle, window, |this, _, cx| this.start_blink(cx)),
-            cx.on_blur(&focus_handle, window, |this, _, cx| {
-                this.blink_epoch += 1;
-                this.cursor_on = true;
-                cx.notify();
-            }),
-        ];
+        let focus = Self::watch_focus(&focus_handle, window, cx);
         Self {
             session,
             options,
@@ -151,9 +153,42 @@ impl TerminalView {
             cursor_blink: true,
             pane: Rc::default(),
             query_theme: None,
+            backdrop: 1.,
+            text_outline: false,
             _events: events_task,
             _focus: focus,
         }
+    }
+
+    /// Focus and blur listeners belong to one window.
+    fn watch_focus(
+        focus_handle: &FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> [Subscription; 2] {
+        [
+            cx.on_focus_in(focus_handle, window, |this, _, cx| this.start_blink(cx)),
+            cx.on_blur(focus_handle, window, |this, _, cx| {
+                this.blink_epoch += 1;
+                this.cursor_on = true;
+                cx.notify();
+            }),
+        ]
+    }
+
+    /// The pane moved to `window` (detached into its own window): listen for focus there.
+    pub fn rehome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._focus = Self::watch_focus(&self.focus_handle, window, cx);
+    }
+
+    pub fn set_backdrop_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {
+        self.backdrop = opacity;
+        cx.notify();
+    }
+
+    pub fn set_text_outline(&mut self, outline: bool, cx: &mut Context<Self>) {
+        self.text_outline = outline;
+        cx.notify();
     }
 
     fn listen(session: &PtySession, cx: &mut Context<Self>) -> Task<()> {
@@ -369,6 +404,7 @@ impl TerminalView {
         if let Some(bytes) = self.encode_key(keystroke, event.prefer_character_input) {
             self.last_activity = Instant::now();
             self.send_input(bytes);
+            cx.emit(TerminalViewEvent::Typed);
             cx.stop_propagation();
         }
     }
@@ -384,6 +420,7 @@ impl TerminalView {
             TermEvent::Title(title) => cx.emit(TerminalViewEvent::TitleChanged(Some(title))),
             TermEvent::ResetTitle => cx.emit(TerminalViewEvent::TitleChanged(None)),
             TermEvent::Bell => cx.emit(TerminalViewEvent::Bell),
+            TermEvent::Notification(text) => cx.emit(TerminalViewEvent::Notification(text)),
             TermEvent::ClipboardCopy(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text))
             }
@@ -499,16 +536,20 @@ impl Render for TerminalView {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.focus_handle.focus(window, cx)),
             )
-            .child(TerminalElement::new(
-                self.session.clone(),
-                colors,
-                self.font.clone(),
-                focused,
-                self.cursor_on,
-                self.smooth_scroll,
-                self.pane.clone(),
-                cx.entity().downgrade(),
-            ))
+            .child(
+                TerminalElement::new(
+                    self.session.clone(),
+                    colors,
+                    self.font.clone(),
+                    focused,
+                    self.cursor_on,
+                    self.smooth_scroll,
+                    self.pane.clone(),
+                    cx.entity().downgrade(),
+                )
+                .backdrop_opacity(self.backdrop)
+                .text_outline(self.text_outline),
+            )
             .children(banner)
     }
 }

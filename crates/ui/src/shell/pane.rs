@@ -2,21 +2,24 @@
 //! buttons) over an optional file drawer and a [`TerminalView`], wrapped in the focus ring.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, linear_color_stop, linear_gradient, px, relative,
+    AnimationExt as _, AnyElement, AnyWindowHandle, App, AppContext as _, BoxShadow, Context,
+    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, MouseButton, MouseMoveEvent, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
+    linear_color_stop, linear_gradient, point, px, relative,
 };
 use maomi_config::DrawerLayout;
-use maomi_term::{PromptState, PtySession, SessionOptions, ShellKind};
+use maomi_term::{PromptState, PtySession, SessionOptions, Shell, ShellKind};
 
 use super::actions::ToggleDrawer;
+use super::agent::{self, AgentState, AgentStatus, StatusRead};
 use super::drawer::{self, DragPreview, DraggedPath, DrawerEvent, FileDrawer};
+use super::standalone::outlined;
 use super::tree::DropZone;
 use crate::{Palette, TerminalView, TerminalViewEvent, Theme, settings};
 
@@ -36,6 +39,12 @@ pub enum PaneEvent {
     /// Another pane was dropped on this one.
     PaneDropped(Entity<Pane>, DropZone),
     Close,
+    /// Move this pane into a window of its own.
+    Detach,
+    /// A detached pane wants back into its tab.
+    Reattach,
+    /// A detached pane's window closed it (any confirmation is done); the pane goes away.
+    Closed,
     /// The shell exited with code 0; the pane goes away. Other codes keep the pane open
     /// with the restart banner so the error stays readable.
     ExitedCleanly,
@@ -55,6 +64,8 @@ pub struct Pane {
     command_epoch: u64,
     exited: bool,
     shell_kind: ShellKind,
+    /// The shell picked from the new-tab menu; None = the configured default.
+    picked_shell: Option<Shell>,
     /// An SSH pane: its cwd is a remote path and its drawer lists the server over SFTP.
     remote: bool,
     /// Created the first time the drawer opens.
@@ -65,8 +76,26 @@ pub struct Pane {
     drawer_follow: bool,
     /// Mouse x and drawer width when a drag on the drawer's edge began.
     resizing: Option<(f32, f32)>,
+    /// What an agent (Claude Code) in this pane last reported through its status file.
+    agent: Option<AgentStatus>,
+    /// The status file's modified time when it was last read.
+    agent_seen: Option<SystemTime>,
+    /// Unix ms when the shell's prompt last came back: older statuses are stale.
+    prompt_back_at: u64,
+    /// A bell or notification arrived while a command ran (no status file); cleared by typing.
+    needs_you: bool,
+    /// The window this pane was detached into; its tab shows a placeholder meanwhile.
+    detached: Option<AnyWindowHandle>,
+    /// Alpha of the pane's backgrounds (below 1 in a faded standalone window).
+    backdrop: f32,
+    /// Overlay text: the header's name and status get the terminal's black outline too.
+    text_outline: bool,
+    _agent_poll: Option<Task<()>>,
     _terminal_events: Subscription,
 }
+
+/// How often a pane looks at its agent status file.
+const AGENT_POLL: Duration = Duration::from_millis(400);
 
 impl Pane {
     /// A pane for a started `session`; `options` are kept for restarting it.
@@ -90,17 +119,17 @@ impl Pane {
         };
         let cwd = session.cwd();
         let shell_kind = session.shell().kind;
-        let terminal = cx.new(|cx| TerminalView::with_session(session, options, window, cx));
-        let subscription = cx.subscribe_in(
-            &terminal,
-            window,
-            |pane, _, event: &TerminalViewEvent, window, cx| match event {
-                TerminalViewEvent::OpenFolder(path) => {
-                    pane.show_in_drawer(path.clone(), window, cx)
-                }
-                event => pane.on_terminal_event(event, cx),
-            },
-        );
+        let agent_poll = agent::pane_id(&options.env)
+            .and_then(|id| agent::status_file(&id))
+            .map(|path| Self::poll_agent(path, cx));
+        let terminal = cx.new(|cx| {
+            let mut view = TerminalView::with_session(session, options, window, cx);
+            // The pane's rounded body paints the backdrop (same colour). The terminal's own
+            // square one would cover the focus ring's bottom corners.
+            view.set_backdrop_opacity(0., cx);
+            view
+        });
+        let subscription = Self::watch_terminal(&terminal, window, cx);
         Self {
             terminal,
             shell_name,
@@ -111,14 +140,167 @@ impl Pane {
             command_epoch: 0,
             exited: false,
             shell_kind,
+            picked_shell: None,
             remote,
             drawer: None,
             drawer_open: false,
             drawer_width: drawer::DEFAULT_WIDTH,
             drawer_follow: settings::config(cx).shell.drawer_follow,
             resizing: None,
+            agent: None,
+            agent_seen: None,
+            prompt_back_at: 0,
+            needs_you: false,
+            detached: None,
+            backdrop: 1.,
+            text_outline: false,
+            _agent_poll: agent_poll,
             _terminal_events: subscription,
         }
+    }
+
+    /// Reads `path` whenever its modified time changes. A file that does not parse yet (the
+    /// mod writes it in place) is read again on the next poll.
+    fn poll_agent(path: PathBuf, cx: &mut Context<Self>) -> Task<()> {
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            loop {
+                executor.timer(AGENT_POLL).await;
+                let Ok((seen, pid)) = this.read_with(cx, |pane, _| {
+                    (pane.agent_seen, pane.agent.as_ref().and_then(|a| a.pid))
+                }) else {
+                    return;
+                };
+                let path = path.clone();
+                let (modified, read, alive) = executor
+                    .spawn(async move {
+                        let (modified, read) = agent::read(&path, seen);
+                        (
+                            modified,
+                            read,
+                            pid.is_none_or(maomi_term::process::is_alive),
+                        )
+                    })
+                    .await;
+                let updated =
+                    this.update(cx, |pane, cx| pane.agent_read(modified, read, alive, cx));
+                if updated.is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
+    /// Applies one look at the status file; `alive` = the agent's process still runs.
+    fn agent_read(
+        &mut self,
+        modified: Option<SystemTime>,
+        read: StatusRead,
+        alive: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let status = match read {
+            StatusRead::Unchanged => self.agent.clone(),
+            // Not seen as read, so the next poll tries again.
+            StatusRead::Partial => return,
+            StatusRead::Missing | StatusRead::Ended => {
+                self.agent_seen = modified;
+                None
+            }
+            StatusRead::Status(status) => {
+                self.agent_seen = modified;
+                Some(status)
+            }
+        };
+        let status = status.filter(|s| alive && s.at >= self.prompt_back_at);
+        if status != self.agent {
+            self.agent = status;
+            if self.agent.is_some() {
+                self.needs_you = false;
+            }
+            cx.emit(PaneEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    /// The agent's state for the session row and header: its status file, else "needs you"
+    /// after a bell or notification.
+    pub fn agent_status(&self) -> Option<AgentStatus> {
+        self.agent.clone().or_else(|| {
+            self.needs_you.then_some(AgentStatus {
+                state: AgentState::NeedsYou,
+                tool: None,
+                pid: None,
+                at: 0,
+            })
+        })
+    }
+
+    fn watch_terminal(
+        terminal: &Entity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(
+            terminal,
+            window,
+            |pane, _, event: &TerminalViewEvent, window, cx| match event {
+                TerminalViewEvent::OpenFolder(path) => {
+                    pane.show_in_drawer(path.clone(), window, cx)
+                }
+                event => pane.on_terminal_event(event, cx),
+            },
+        )
+    }
+
+    /// The pane moved to `window` (detached into its own window): its window-bound listeners
+    /// follow it, and the drawer is rebuilt because its inputs belong to the old window.
+    pub fn rehome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal.update(cx, |view, cx| view.rehome(window, cx));
+        self._terminal_events = Self::watch_terminal(&self.terminal, window, cx);
+        if let Some(layout) = self.drawer_layout(cx) {
+            self.drawer = None;
+            self.restore_drawer(layout, window, cx);
+        }
+    }
+
+    /// Marks the pane as shown in `window` (detached), or back in its tab (None). A detached
+    /// pane has no split or detach buttons.
+    pub fn set_detached(&mut self, window: Option<AnyWindowHandle>, cx: &mut Context<Self>) {
+        self.detached = window;
+        cx.emit(PaneEvent::Changed);
+        cx.notify();
+    }
+
+    pub fn detached_window(&self) -> Option<AnyWindowHandle> {
+        self.detached
+    }
+
+    pub fn is_detached(&self) -> bool {
+        self.detached.is_some()
+    }
+
+    /// Asks the pane's tab to take it back (the detached window's Attach back button).
+    pub fn request_reattach(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PaneEvent::Reattach);
+    }
+
+    /// The detached window closed this pane; its tab drops the placeholder.
+    pub fn close_detached(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PaneEvent::Closed);
+    }
+
+    pub fn set_backdrop_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {
+        self.backdrop = opacity;
+        cx.notify();
+    }
+
+    /// Overlay text (white with a black outline) for a faded detached window.
+    pub fn set_text_outline(&mut self, outline: bool, cx: &mut Context<Self>) {
+        self.text_outline = outline;
+        self.terminal
+            .update(cx, |view, cx| view.set_text_outline(outline, cx));
+        cx.notify();
     }
 
     /// The drawer's state for the saved layout; None while it was never opened.
@@ -237,6 +419,36 @@ impl Pane {
         self.exited
     }
 
+    /// Splits and the saved layout reopen this shell.
+    pub fn picked_shell(&self) -> Option<&Shell> {
+        self.picked_shell.as_ref()
+    }
+
+    pub fn set_picked_shell(&mut self, shell: Option<Shell>) {
+        self.picked_shell = shell;
+    }
+
+    /// A command is running (OSC 133); the header shows the running dot.
+    pub fn is_running(&self) -> bool {
+        self.prompt == PromptState::Running && !self.exited
+    }
+
+    /// Program the running command started, once it has been looked up.
+    pub fn command(&self) -> Option<&str> {
+        self.command.as_deref().filter(|_| self.is_running())
+    }
+
+    /// The pane's name in its header and the Sessions dock: the program's title (Claude Code
+    /// sets one per conversation), else the shell's name.
+    pub fn name(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.shell_name)
+    }
+
+    /// The running program set a title (OSC 0/2).
+    pub fn has_program_title(&self) -> bool {
+        self.title.is_some()
+    }
+
     /// Tab title: the program's title, else `shell cwd`.
     pub fn title(&self) -> String {
         match &self.title {
@@ -308,6 +520,12 @@ impl Pane {
                 self.prompt = *state;
                 self.command_epoch += 1;
                 self.command = None;
+                if *state == PromptState::Prompt {
+                    // The agent's program ended with the command; what it wrote is stale now.
+                    self.prompt_back_at = agent::now_ms();
+                    self.agent = None;
+                    self.needs_you = false;
+                }
                 if *state == PromptState::Running {
                     self.look_up_command(cx);
                 }
@@ -316,9 +534,28 @@ impl Pane {
                     drawer.update(cx, |d, cx| d.set_follow_blocked(running, cx));
                 }
             }
-            TerminalViewEvent::Bell | TerminalViewEvent::OpenFolder(_) => return,
+            // Without a status file, a bell or notification while a command runs means the
+            // program (an agent asking for permission, a finished build) wants the user.
+            TerminalViewEvent::Bell | TerminalViewEvent::Notification(_) => {
+                // Only while a command is known to run: shells without prompt marks also ring
+                // for Backspace at an empty prompt.
+                if self.agent.is_some() || self.needs_you || self.prompt != PromptState::Running {
+                    return;
+                }
+                self.needs_you = true;
+            }
+            TerminalViewEvent::Typed => {
+                if !self.needs_you {
+                    return;
+                }
+                self.needs_you = false;
+            }
+            TerminalViewEvent::OpenFolder(_) => return,
             TerminalViewEvent::Restarted => {
                 self.exited = false;
+                self.agent = None;
+                self.needs_you = false;
+                self.prompt_back_at = agent::now_ms();
                 self.prompt = PromptState::Unknown;
                 self.command_epoch += 1;
                 self.command = None;
@@ -356,6 +593,7 @@ impl Pane {
                     }
                     if name.is_some() {
                         pane.command = name;
+                        cx.emit(PaneEvent::Changed);
                         cx.notify();
                         return true;
                     }
@@ -382,9 +620,23 @@ impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Theme::current(cx).palette();
         let focused = self.terminal.focus_handle(cx).is_focused(window);
-        let running = self.prompt == PromptState::Running && !self.exited;
+        let running = self.is_running();
+        // An agent's state replaces the plain running dot and command name.
+        let status = self
+            .agent_status()
+            .filter(|_| !self.exited)
+            .map(|a| (agent::color(&a, p), Some(a.label())))
+            .or_else(|| running.then(|| (p.now, self.command.clone())));
 
         let drag_label: SharedString = self.title().into();
+        let outline = self.text_outline;
+        let name = self.name().to_owned();
+        // Overlay text lifts the header's text too, like the terminal's.
+        let (name_color, muted) = if outline {
+            (gpui_kit::white(), p.fg.lifted(0.82).to_hsla())
+        } else {
+            (p.muted.to_hsla(), p.muted.to_hsla())
+        };
         let header = div()
             .id("pane-header")
             // Dragging the header moves the pane; drop zones appear on the other panes.
@@ -400,15 +652,26 @@ impl Render for Pane {
             .px(px(6.))
             .text_size(px(11.5))
             .text_color(p.muted.to_hsla())
-            .bg(p.surface_2.to_hsla())
+            .bg(p.surface_2.to_hsla().opacity(self.backdrop))
+            // GPUI clips children to a square, so the header rounds itself to keep the
+            // ring's top corners visible.
+            .rounded_t(px(7.))
             .border_b_1()
             .border_color(p.line.to_hsla())
             .child(
                 drawer_pill(&self.cwd_name(), self.drawer_open, p)
                     .on_click(cx.listener(|pane, _, window, cx| pane.toggle_drawer(window, cx))),
             )
-            .child(div().flex_none().child(self.shell_name.clone()))
-            .when(running, |d| {
+            // A long program title gives way to the status and buttons.
+            .child(
+                div()
+                    .min_w_0()
+                    .max_w(px(260.))
+                    .child(outlined(outline, name_color, |c| {
+                        div().truncate().text_color(c).child(name.clone())
+                    })),
+            )
+            .when_some(status, |d, (color, label)| {
                 d.child(
                     div()
                         .flex()
@@ -418,34 +681,52 @@ impl Render for Pane {
                         .child(
                             div()
                                 .flex_none()
-                                .text_size(px(10.))
-                                .text_color(p.now.to_hsla())
-                                .child("●"),
+                                .child(outlined(outline, color.to_hsla(), |c| {
+                                    div().text_size(px(10.)).text_color(c).child("●")
+                                })),
                         )
-                        .when_some(self.command.clone(), |d, name| {
-                            d.child(div().truncate().child(name))
+                        .when_some(label, |d, label| {
+                            d.child(div().min_w_0().child(outlined(outline, muted, |c| {
+                                div().truncate().text_color(c).child(label.clone())
+                            })))
                         }),
                 )
             })
             .child(div().flex_1().min_w_0())
-            .child(
-                header_button(
-                    "split",
-                    IconName::PanelRight,
-                    "Split right (Ctrl+Shift+D)",
-                    p,
+            // A detached window holds one pane, so splitting and detaching do not apply.
+            .when(!self.is_detached(), |d| {
+                d.child(
+                    header_button(
+                        "detach",
+                        gpui_kit::assets::IconName::SquareArrowOutUpRight,
+                        "Detach into its own window",
+                        p,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::Detach))),
                 )
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitRight))),
-            )
-            .child(
-                header_button(
-                    "split-down",
-                    IconName::PanelBottom,
-                    "Split down (Ctrl+Shift+E)",
-                    p,
+            })
+            .when(!self.is_detached(), |d| {
+                d.child(
+                    header_button(
+                        "split",
+                        IconName::PanelRight,
+                        "Split right (Ctrl+Shift+D)",
+                        p,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitRight))),
                 )
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitDown))),
-            )
+            })
+            .when(!self.is_detached(), |d| {
+                d.child(
+                    header_button(
+                        "split-down",
+                        IconName::PanelBottom,
+                        "Split down (Ctrl+Shift+E)",
+                        p,
+                    )
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::SplitDown))),
+                )
+            })
             .child(
                 header_button("close", IconName::Close, "Close pane (Ctrl+Shift+W)", p)
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(PaneEvent::Close))),
@@ -459,42 +740,82 @@ impl Render for Pane {
             .min_h_0()
             .overflow_hidden()
             .rounded(px(7.))
-            .bg(p.surface.to_hsla())
+            // A detached window paints the backdrop once behind everything.
+            .when(!self.is_detached(), |d| {
+                d.bg(p.surface.to_hsla().opacity(self.backdrop))
+            })
             .child(header)
             .child(self.render_body(p, cx));
 
         // Focus ring: a 1 px gradient border (the aurora / fire gradient), else the line colour.
-        let ring = div().size_full().p(px(1.)).rounded(px(8.));
-        let ring = if focused {
+        // It is a fill behind the pane showing through 1 px, so a faded detached window would
+        // show it everywhere: there it is a real border, lit only while an agent pulses.
+        let detached = self.is_detached();
+        let ring = div().size_full().rounded(px(8.));
+        let ring = if detached {
+            ring.border_1().border_color(gpui_kit::transparent_black())
+        } else if focused {
+            let ring = ring.p(px(1.));
             ring.bg(linear_gradient(
                 90.,
                 linear_color_stop(p.gradient[0].to_hsla(), 0.),
                 linear_color_stop(p.gradient[3].to_hsla(), 1.),
             ))
         } else {
-            ring.bg(p.line.to_hsla())
+            ring.p(px(1.)).bg(p.line.to_hsla())
         };
-        ring.on_action(
-            cx.listener(|pane, _: &ToggleDrawer, window, cx| pane.toggle_drawer(window, cx)),
-        )
-        // Dragging the drawer's edge: tracked on the whole pane so a fast mouse stays in it.
-        .on_mouse_move(cx.listener(|pane, event: &MouseMoveEvent, _, cx| {
-            let Some((start_x, start_width)) = pane.resizing else {
-                return;
-            };
-            if event.dragging() {
-                let width = start_width + (event.position.x / px(1.)) - start_x;
-                pane.drawer_width = width.clamp(drawer::MIN_WIDTH, drawer::MAX_WIDTH);
-                cx.notify();
-            } else {
-                pane.resizing = None;
-            }
-        }))
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(|pane, _, _, _| pane.resizing = None),
-        )
-        .child(inner)
+        let ring = ring
+            .on_action(
+                cx.listener(|pane, _: &ToggleDrawer, window, cx| pane.toggle_drawer(window, cx)),
+            )
+            // Dragging the drawer's edge: tracked on the whole pane so a fast mouse stays in it.
+            .on_mouse_move(cx.listener(|pane, event: &MouseMoveEvent, _, cx| {
+                let Some((start_x, start_width)) = pane.resizing else {
+                    return;
+                };
+                if event.dragging() {
+                    let width = start_width + (event.position.x / px(1.)) - start_x;
+                    pane.drawer_width = width.clamp(drawer::MIN_WIDTH, drawer::MAX_WIDTH);
+                    cx.notify();
+                } else {
+                    pane.resizing = None;
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|pane, _, _, _| pane.resizing = None),
+            )
+            .child(inner);
+
+        // An agent blocked on the user pulses the border (and a soft glow) in its colour.
+        let alert = self
+            .agent_status()
+            .filter(|a| a.pulses() && !self.exited)
+            .map(|a| agent::color(&a, p).to_hsla());
+        match alert {
+            Some(color) => ring
+                .with_animation(
+                    ("pane-alert", cx.entity_id().as_u64() as usize),
+                    agent::pulse(),
+                    move |ring, t| {
+                        let lit = color.opacity(0.35 + 0.65 * t);
+                        let ring = if detached {
+                            ring.border_color(lit)
+                        } else {
+                            ring.bg(lit)
+                        };
+                        ring.shadow(vec![BoxShadow {
+                            color: color.opacity(0.45 * t),
+                            offset: point(px(0.), px(0.)),
+                            blur_radius: px(8.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                    },
+                )
+                .into_any_element(),
+            None => ring.into_any_element(),
+        }
     }
 }
 
@@ -673,7 +994,11 @@ fn drawer_pill(name: &str, open: bool, p: &Palette) -> gpui_kit::Stateful<gpui_k
 /// `path` as one shell word: single quotes for PowerShell and POSIX shells, double quotes
 /// for cmd (which has no single quotes). Plain paths stay unquoted.
 fn quote_path(kind: ShellKind, path: &Path) -> String {
-    let text = path.display().to_string();
+    let text = if kind == ShellKind::Wsl {
+        wsl_path(path)
+    } else {
+        path.display().to_string()
+    };
     let plain = text
         .chars()
         .all(|c| c.is_alphanumeric() || "/\\:._-+~".contains(c));
@@ -684,6 +1009,20 @@ fn quote_path(kind: ShellKind, path: &Path) -> String {
         ShellKind::Cmd => format!("\"{text}\""),
         ShellKind::Pwsh | ShellKind::WindowsPowerShell => format!("'{}'", text.replace('\'', "''")),
         _ => format!("'{}'", text.replace('\'', r"'\''")),
+    }
+}
+
+/// A Windows path as WSL sees it: `C:\Users\me` → `/mnt/c/Users/me`. Others stay as they are.
+fn wsl_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(drive), Some(':')) if drive.is_ascii_alphabetic() => {
+            let rest = chars.as_str().replace('\\', "/");
+            let rest = rest.trim_start_matches('/');
+            format!("/mnt/{}/{rest}", drive.to_ascii_lowercase())
+        }
+        _ => text,
     }
 }
 
@@ -702,7 +1041,7 @@ fn cd_command(kind: ShellKind, dir: &Path) -> String {
 
 fn header_button(
     id: &'static str,
-    icon: IconName,
+    icon: impl Into<Icon>,
     tooltip: &'static str,
     p: &Palette,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
@@ -769,5 +1108,18 @@ mod tests {
             cd_command(ShellKind::Pwsh, dir),
             "Set-Location -LiteralPath 'D:/a b'"
         );
+    }
+
+    #[test]
+    fn wsl_gets_mnt_paths() {
+        assert_eq!(
+            cd_command(ShellKind::Wsl, Path::new(r"C:\Users\me")),
+            "cd /mnt/c/Users/me"
+        );
+        assert_eq!(
+            quote_path(ShellKind::Wsl, Path::new(r"D:\a b\x.txt")),
+            "'/mnt/d/a b/x.txt'"
+        );
+        assert_eq!(quote_path(ShellKind::Wsl, Path::new("src/x")), "src/x");
     }
 }

@@ -50,6 +50,25 @@ impl Color {
         }
     }
 
+    /// Brightness from 0 (black) to 1 (white), Rec. 709 weights on the sRGB values: close
+    /// enough for telling dark text from light.
+    pub fn luminance(self) -> f32 {
+        (0.2126 * f32::from(self.r) + 0.7152 * f32::from(self.g) + 0.0722 * f32::from(self.b))
+            / 255.0
+    }
+
+    /// The colour moved toward white just far enough to reach `min` luminance (hue kept);
+    /// lighter colours stay as they are.
+    pub fn lifted(self, min: f32) -> Self {
+        let l = self.luminance();
+        if l >= min {
+            return self;
+        }
+        // Mixing toward white raises luminance linearly: l + (1 - l) * t.
+        let t = (min - l) / (1.0 - l);
+        self.mix(Self::new(255, 255, 255, self.a), t)
+    }
+
     /// GPUI colour for painting.
     pub fn to_hsla(self) -> gpui_kit::Hsla {
         gpui_kit::Rgba {
@@ -65,6 +84,19 @@ impl Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lifting_brightens_only_dark_colours() {
+        let black = Color::hex(0x000000).lifted(0.7);
+        assert!((black.luminance() - 0.7).abs() < 0.01, "{black:?}");
+        let dark_blue = Color::hex(0x1a2a6c);
+        let lifted = dark_blue.lifted(0.7);
+        assert!(lifted.luminance() >= 0.69);
+        // Still bluish: blue stays the largest channel.
+        assert!(lifted.b >= lifted.r && lifted.b >= lifted.g);
+        let light = Color::hex(0xe0e0e0);
+        assert_eq!(light.lifted(0.7), light);
+    }
 
     #[test]
     fn hex_splits_channels() {

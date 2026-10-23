@@ -2,6 +2,8 @@
 
 mod integration;
 mod osc;
+mod priority;
+pub mod process;
 pub mod session;
 pub mod shell;
 pub mod snapshot;

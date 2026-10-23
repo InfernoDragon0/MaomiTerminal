@@ -149,6 +149,8 @@ pub enum TermEvent {
     Title(String),
     ResetTitle,
     Bell,
+    /// A desktop notification from the program (OSC 9 / OSC 777).
+    Notification(String),
     /// OSC 52 copy (only when [`SessionOptions::osc52_copy`] is on).
     ClipboardCopy(String),
     CwdChanged(PathBuf),
@@ -270,6 +272,7 @@ impl Shared {
             ShellMark::Cwd(path) => self.set_cwd(path, true),
             ShellMark::Prompt(mark) => self.set_prompt(mark),
             ShellMark::Win32InputMode(on) => self.win32_input.store(on, Ordering::Release),
+            ShellMark::Notify(text) => self.send(TermEvent::Notification(text)),
         }
     }
 
@@ -444,6 +447,12 @@ impl PtySession {
         // and on Windows it holds a reference to the pseudo console.
         drop(pair.slave);
         let pid = child.process_id();
+        if let Some(pid) = pid {
+            // Off the caller's thread: it reads the whole process table.
+            thread::Builder::new()
+                .name("maomi-pty-priority".into())
+                .spawn(move || crate::priority::raise_shell(pid))?;
+        }
         let killer = child.clone_killer();
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
@@ -814,6 +823,7 @@ fn start(
     thread::Builder::new()
         .name("maomi-pty-writer".into())
         .spawn(move || {
+            crate::priority::raise_current_thread();
             for bytes in input_rx {
                 if writer
                     .write_all(&bytes)
@@ -832,6 +842,7 @@ fn start(
         thread::Builder::new()
             .name("maomi-pty-reader".into())
             .spawn(move || {
+                crate::priority::raise_current_thread();
                 read_loop(reader, &term, &shared);
                 let _ = drained_tx.send(());
             })?;

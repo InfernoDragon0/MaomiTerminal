@@ -66,7 +66,7 @@ pub(crate) struct PaneState {
     /// Button held while the program receives mouse reports.
     reporting: Option<ReportButton>,
     last_report_cell: Option<(usize, usize)>,
-    /// Link under the pointer while Ctrl (Cmd on macOS) is held.
+    /// Link under the pointer: underlined lightly, fully while Ctrl (Cmd on macOS) is held.
     hovered_link: Option<Link>,
     /// Path under the pointer whose existence check is still running.
     awaiting_link: Option<Link>,
@@ -114,9 +114,25 @@ pub struct TerminalElement {
     state: Rc<RefCell<PaneState>>,
     /// Receives `OpenFolder` when a folder path is Ctrl+clicked.
     view: WeakEntity<TerminalView>,
+    /// Alpha of the backdrop quad (0 when the parent paints a rounded one); text and cell
+    /// highlights stay opaque.
+    backdrop: f32,
+    /// Overlay text: default-coloured text turns white and every glyph gets a black outline,
+    /// readable over any background (a faded detached window).
+    outline: bool,
 }
 
 impl TerminalElement {
+    pub(crate) fn backdrop_opacity(mut self, opacity: f32) -> Self {
+        self.backdrop = opacity;
+        self
+    }
+
+    pub(crate) fn text_outline(mut self, outline: bool) -> Self {
+        self.outline = outline;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         session: Arc<PtySession>,
@@ -137,6 +153,8 @@ impl TerminalElement {
             smooth_scroll,
             state,
             view,
+            backdrop: 1.,
+            outline: false,
         }
     }
 }
@@ -178,6 +196,8 @@ pub struct LayoutState {
     backgrounds: Vec<PaintQuad>,
     selections: Vec<PaintQuad>,
     lines: Vec<(Point<Pixels>, ShapedLine)>,
+    /// Black copies of `lines`, drawn around each one when the text is outlined.
+    outlines: Vec<(Point<Pixels>, ShapedLine)>,
     builtin: Vec<builtin::Shape>,
     cursor: Option<PaintQuad>,
     /// The glyph redrawn on top of a block cursor.
@@ -306,16 +326,43 @@ impl Element for TerminalElement {
             let run = text_run(&base_font, text.len(), style, color);
             text_system.shape_line(text, font_size, &[run], Some(cell_width))
         };
+        // Overlay text keeps program colours but turns the default text white.
+        let white = Color::new(255, 255, 255, 255);
         let lines = grid_layout
             .batches
             .iter()
             .map(|batch| {
+                // Dark colours vanish over a dark background even with an outline: they are
+                // lifted toward white (hue kept) so every glyph is light on a dark edge.
+                let color = self.outline.then(|| {
+                    if batch.style.fg == self.colors.fg {
+                        white
+                    } else {
+                        batch.style.fg.lifted(OVERLAY_MIN_LUMINANCE)
+                    }
+                });
                 (
                     cell_origin(batch.row, batch.col),
-                    shape(batch.text.clone().into(), &batch.style, None),
+                    shape(batch.text.clone().into(), &batch.style, color),
                 )
             })
             .collect();
+        // Same layout, so the shaping comes from GPUI's line cache; only the colour differs.
+        let black = Color::new(0, 0, 0, 255);
+        let outlines = if self.outline {
+            grid_layout
+                .batches
+                .iter()
+                .map(|batch| {
+                    (
+                        cell_origin(batch.row, batch.col),
+                        shape(batch.text.clone().into(), &batch.style, Some(black)),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         let builtin = grid_layout
             .builtin
@@ -420,10 +467,11 @@ impl Element for TerminalElement {
             },
             snapshot: Rc::new(snapshot),
             rows_top,
-            pane: fill(bounds, self.colors.bg.to_hsla()),
+            pane: fill(bounds, self.colors.bg.to_hsla().opacity(self.backdrop)),
             backgrounds,
             selections,
             lines,
+            outlines,
             builtin,
             cursor,
             cursor_text,
@@ -445,7 +493,8 @@ impl Element for TerminalElement {
         let _span = tracing::trace_span!("terminal_paint").entered();
         let geometry = layout.geometry;
         let hovered_link = self.state.borrow().hovered_link.clone();
-        let mouse_cursor = if hovered_link.is_some() {
+        let link_armed = link_modifier(&window.modifiers());
+        let mouse_cursor = if hovered_link.is_some() && link_armed {
             MouseCursor::PointingHand
         } else {
             MouseCursor::IBeam
@@ -461,6 +510,14 @@ impl Element for TerminalElement {
                 window.paint_quad(quad);
             }
             let line_height = geometry.line_height;
+            // The outline: the black copy one pixel off in all eight directions, then the text.
+            let px1 = px(1.);
+            for (origin, line) in &layout.outlines {
+                for (dx, dy) in OUTLINE_OFFSETS {
+                    let at = point(origin.x + px1 * dx, origin.y + px1 * dy);
+                    let _ = line.paint(at, line_height, TextAlign::Left, None, window, cx);
+                }
+            }
             for (origin, line) in &layout.lines {
                 let _ = line.paint(*origin, line_height, TextAlign::Left, None, window, cx);
             }
@@ -474,13 +531,18 @@ impl Element for TerminalElement {
                 }
             }
             if let Some(link) = &hovered_link {
-                let x = geometry.origin.x + geometry.cell_width * link.start as f32;
-                let y = layout.rows_top + line_height * (link.row as f32 + 1.) - px(2.);
-                let width = geometry.cell_width * (link.end - link.start) as f32;
-                window.paint_quad(fill(
-                    Bounds::new(point(x, y), size(width, px(1.))),
-                    self.colors.cursor.to_hsla(),
-                ));
+                // A faint line shows what Ctrl+click opens; holding Ctrl makes it solid.
+                let color = if link_armed {
+                    self.colors.cursor.to_hsla()
+                } else {
+                    self.colors.fg.to_hsla().opacity(0.4)
+                };
+                for (row, start, end) in link.segments() {
+                    let x = geometry.origin.x + geometry.cell_width * start as f32;
+                    let y = layout.rows_top + line_height * (row as f32 + 1.) - px(2.);
+                    let width = geometry.cell_width * (end - start) as f32;
+                    window.paint_quad(fill(Bounds::new(point(x, y), size(width, px(1.))), color));
+                }
             }
             if let Some(quad) = layout.cursor.take() {
                 window.paint_quad(quad);
@@ -505,6 +567,11 @@ impl TerminalElement {
         let display_offset = layout.snapshot.display_offset;
         let reporting =
             move |modifiers: &Modifiers| mode.intersects(TermMode::MOUSE_MODE) && !modifiers.shift;
+
+        // Pressing or releasing Ctrl over a link switches its underline and the pointer.
+        if self.state.borrow().hovered_link.is_some() {
+            window.on_modifiers_changed(|_, window, _| window.refresh());
+        }
         let grid_point = move |col: usize, row: usize| {
             GridPoint::new(Line(row as i32 - display_offset as i32), Column(col))
         };
@@ -689,7 +756,7 @@ impl TerminalElement {
                 }
 
                 let mut awaiting = None;
-                let link = (hitbox.is_hovered(window) && link_modifier(&event.modifiers))
+                let link = (hitbox.is_hovered(window) && event.pressed_button.is_none())
                     .then(|| {
                         let abs = snapshot.rows_above + row;
                         input::link_at(&snapshot, abs, col).or_else(|| {
@@ -708,14 +775,8 @@ impl TerminalElement {
                         })
                     })
                     .flatten()
-                    .map(|link| Link {
-                        row: link.row - snapshot.rows_above,
-                        ..link
-                    });
-                let awaiting = awaiting.map(|link| Link {
-                    row: link.row - snapshot.rows_above,
-                    ..link
-                });
+                    .map(|link| link.rebased(snapshot.rows_above));
+                let awaiting = awaiting.map(|link: Link| link.rebased(snapshot.rows_above));
                 state.awaiting_link = awaiting.clone();
                 if link != state.hovered_link {
                     state.hovered_link = link;
@@ -889,6 +950,21 @@ fn scroll(session: &PtySession, mode: TermMode, lines: i32) {
         session.scroll(lines);
     }
 }
+
+/// Overlay text is at least this bright (0-1), so it reads against its black outline.
+const OVERLAY_MIN_LUMINANCE: f32 = 0.82;
+
+/// Directions of the text outline, one logical pixel each.
+pub(crate) const OUTLINE_OFFSETS: [(f32, f32); 8] = [
+    (-1., -1.),
+    (0., -1.),
+    (1., -1.),
+    (-1., 0.),
+    (1., 0.),
+    (-1., 1.),
+    (0., 1.),
+    (1., 1.),
+];
 
 fn text_run(base: &gpui_kit::Font, len: usize, style: &TextStyle, color: Option<Color>) -> TextRun {
     let mut font = base.clone();

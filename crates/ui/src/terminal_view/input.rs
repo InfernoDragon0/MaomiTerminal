@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui_kit::Keystroke;
-use maomi_term::{CellFlags, GridSnapshot, TermMode};
+use maomi_term::{CellFlags, GridSnapshot, SnapshotCell, TermMode};
 
 use super::paths;
 
@@ -87,6 +87,8 @@ pub(crate) fn encode_key(
         Some(out)
     };
     match key {
+        // Ctrl+Enter sends a line feed (as Windows Terminal does), which apps can tell apart.
+        "enter" if m.control => return esc_if_alt(b"\n"),
         "enter" => return esc_if_alt(b"\r"),
         "tab" if m.shift => return Some(b"\x1b[Z".to_vec()),
         "tab" if !m.control => return esc_if_alt(b"\t"),
@@ -214,13 +216,39 @@ pub(crate) fn encode_mouse(
     Some(out)
 }
 
-/// A link on one row: columns `start..end`.
+/// A link that starts on `row` and may wrap onto the rows below: `start..end` are offsets
+/// into that wrapped line, `columns` wide per row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Link {
     pub row: usize,
     pub start: usize,
     pub end: usize,
+    pub columns: usize,
     pub target: LinkTarget,
+}
+
+impl Link {
+    /// The same link with rows counted from row `top`; any part above it is cut off.
+    pub(crate) fn rebased(self, top: usize) -> Self {
+        let cut = top.saturating_sub(self.row) * self.columns;
+        Self {
+            row: self.row.max(top) - top,
+            start: self.start.max(cut) - cut,
+            end: self.end.max(cut) - cut,
+            ..self
+        }
+    }
+
+    /// The link's part on each row: `(row, start column, end column)`.
+    pub(crate) fn segments(&self) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+        let columns = self.columns.max(1);
+        (self.start / columns..=(self.end - 1) / columns).map(move |i| {
+            let row_start = i * columns;
+            let start = self.start.max(row_start) - row_start;
+            let end = self.end.min(row_start + columns) - row_start;
+            (self.row + i, start, end)
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,38 +260,73 @@ pub(crate) enum LinkTarget {
 
 const SCHEMES: [&str; 5] = ["https://", "http://", "file://", "mailto:", "ftp://"];
 
-/// The link under cell (`row`, `col`): an OSC 8 hyperlink, else a URL in the row's text.
+/// Rows looked at around the pointer for one wrapped line, so a huge line stays cheap.
+const MAX_WRAPPED_ROWS: usize = 32;
+
+/// The line `row` belongs to when the program's output wrapped: its first row, its cells and
+/// the offset of (`row`, `col`) into them.
+fn wrapped_line(
+    snapshot: &GridSnapshot,
+    row: usize,
+    col: usize,
+) -> Option<(usize, Vec<&SnapshotCell>, usize)> {
+    let rows = snapshot.rows().count();
+    if row >= rows || col >= snapshot.columns {
+        return None;
+    }
+    let wraps = |r: usize| {
+        snapshot
+            .row(r)
+            .last()
+            .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE))
+    };
+    let mut first = row;
+    while first > 0 && row - first < MAX_WRAPPED_ROWS && wraps(first - 1) {
+        first -= 1;
+    }
+    let mut last = row;
+    while last + 1 < rows && last - row < MAX_WRAPPED_ROWS && wraps(last) {
+        last += 1;
+    }
+    let cells = (first..=last).flat_map(|r| snapshot.row(r)).collect();
+    Some((first, cells, (row - first) * snapshot.columns + col))
+}
+
+/// The link under cell (`row`, `col`): an OSC 8 hyperlink, else a URL in the line's text.
 /// `row` indexes [`GridSnapshot::rows`].
 pub(crate) fn link_at(snapshot: &GridSnapshot, row: usize, col: usize) -> Option<Link> {
-    let cells = snapshot.row(row);
-    if let Some(link) = cells.get(col)?.hyperlink.as_ref() {
-        let same = |c: &maomi_term::SnapshotCell| {
-            c.hyperlink.as_ref().is_some_and(|h| h.id() == link.id())
+    let (first, cells, at) = wrapped_line(snapshot, row, col)?;
+    let link = |start, end, target| Link {
+        row: first,
+        start,
+        end,
+        columns: snapshot.columns,
+        target,
+    };
+    if let Some(hyperlink) = cells[at].hyperlink.as_ref() {
+        let same = |c: &&SnapshotCell| {
+            c.hyperlink
+                .as_ref()
+                .is_some_and(|h| h.id() == hyperlink.id())
         };
-        let start = cells[..col]
+        let start = cells[..at]
             .iter()
             .rposition(|c| !same(c))
             .map_or(0, |i| i + 1);
-        let end = cells[col..]
+        let end = cells[at..]
             .iter()
             .position(|c| !same(c))
-            .map_or(cells.len(), |i| col + i);
-        return Some(Link {
-            row,
-            start,
-            end,
-            target: LinkTarget::Url(link.uri().to_owned()),
-        });
+            .map_or(cells.len(), |i| at + i);
+        let url = LinkTarget::Url(hyperlink.uri().to_owned());
+        return Some(link(start, end, url));
     }
-    let text = row_text(cells);
+    let text = line_text(&cells);
     find_urls(&text)
         .into_iter()
-        .find(|(s, e)| (*s..*e).contains(&col))
-        .map(|(start, end)| Link {
-            row,
-            start,
-            end,
-            target: LinkTarget::Url(text[start..end].iter().collect()),
+        .find(|(s, e)| (*s..*e).contains(&at))
+        .map(|(start, end)| {
+            let url = text[start..end].iter().collect();
+            link(start, end, LinkTarget::Url(url))
         })
 }
 
@@ -275,18 +338,19 @@ pub(crate) fn path_at(
     col: usize,
     cwd: Option<&Path>,
 ) -> Option<Link> {
-    let text = row_text(snapshot.row(row));
-    let (start, end, raw) = paths::path_at(&text, col)?;
+    let (first, cells, at) = wrapped_line(snapshot, row, col)?;
+    let (start, end, raw) = paths::path_at(&line_text(&cells), at)?;
     Some(Link {
-        row,
+        row: first,
         start,
         end,
+        columns: snapshot.columns,
         target: LinkTarget::Path(paths::resolve(&raw, cwd)?),
     })
 }
 
 /// One char per column; the right half of a wide char becomes a space so columns line up.
-fn row_text(cells: &[maomi_term::SnapshotCell]) -> Vec<char> {
+fn line_text(cells: &[&SnapshotCell]) -> Vec<char> {
     cells
         .iter()
         .map(|c| {
@@ -376,11 +440,54 @@ mod tests {
         assert_eq!(key("ctrl-["), Some(vec![0x1b]));
         assert_eq!(key("ctrl-space"), Some(vec![0]));
         assert_eq!(key("enter"), Some(b"\r".to_vec()));
+        assert_eq!(key("ctrl-enter"), Some(b"\n".to_vec()));
         assert_eq!(key("backspace"), Some(vec![0x7f]));
         assert_eq!(key("ctrl-backspace"), Some(vec![0x08]));
         assert_eq!(key("shift-tab"), Some(b"\x1b[Z".to_vec()));
         assert_eq!(typed("alt-b", "b"), Some(b"\x1bb".to_vec()));
         assert_eq!(key("ctrl-alt-c"), Some(vec![0x1b, 3]));
+    }
+
+    fn grid(columns: usize, bytes: &[u8]) -> GridSnapshot {
+        use maomi_term::alacritty_terminal::Term;
+        use maomi_term::alacritty_terminal::event::VoidListener;
+        use maomi_term::alacritty_terminal::term::Config;
+        use maomi_term::alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
+        let size = maomi_term::TermSize::new(columns as u16, 4);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser: Processor<StdSyncHandler> = Processor::new();
+        parser.advance(&mut term, bytes);
+        GridSnapshot::from_term(&term)
+    }
+
+    #[test]
+    fn urls_that_wrap_onto_the_next_row() {
+        // "go https://example.com/a/b" in 12 columns: the URL runs from row 0 into row 2.
+        let snap = grid(12, b"go https://example.com/a/b");
+        let url = LinkTarget::Url("https://example.com/a/b".into());
+        for (row, col) in [(0, 5), (1, 3), (2, 1)] {
+            let link = link_at(&snap, row, col).expect("link");
+            assert_eq!(link.target, url, "at ({row}, {col})");
+            assert_eq!(
+                link.segments().collect::<Vec<_>>(),
+                [(0, 3, 12), (1, 0, 12), (2, 0, 2)]
+            );
+        }
+        assert_eq!(link_at(&snap, 0, 1), None);
+        // Cut to the rows from row 1 down, as when row 0 is scrolled out of view.
+        let trimmed = link_at(&snap, 1, 3).unwrap().rebased(1);
+        assert_eq!(
+            trimmed.segments().collect::<Vec<_>>(),
+            [(0, 0, 12), (1, 0, 2)]
+        );
+    }
+
+    #[test]
+    fn rows_without_a_wrap_stay_separate() {
+        let snap = grid(40, b"https://a.example\r\nmore");
+        let link = link_at(&snap, 0, 2).unwrap();
+        assert_eq!(link.target, LinkTarget::Url("https://a.example".into()));
+        assert_eq!(link_at(&snap, 1, 1), None);
     }
 
     #[test]
