@@ -674,7 +674,9 @@ impl Workspace {
         .detach();
     }
 
-    /// Opens a plan's board in the centre and, with `card`, that card's drawer.
+    /// A plan link opens the plan's board in the centre. A card link only opens the card's
+    /// drawer over whatever the centre shows (user request), outlining the card when its board
+    /// is the one on screen.
     fn show_plan(
         &mut self,
         plan: PathBuf,
@@ -682,14 +684,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_board(plan.clone(), window, cx);
         match card {
             Some(card) => {
-                self.set_board_card(Some(card.clone()), cx);
+                let on_board = self.show_board
+                    && self
+                        .board_page
+                        .as_ref()
+                        .is_some_and(|page| page.read(cx).plan() == plan);
+                self.set_board_card(on_board.then(|| card.clone()), cx);
                 self.card_drawer
                     .update(cx, |drawer, cx| drawer.show(plan, card, cx));
             }
             None => {
+                self.open_board(plan, window, cx);
                 self.card_drawer.update(cx, |drawer, cx| drawer.close(cx));
                 self.set_board_card(None, cx);
             }
