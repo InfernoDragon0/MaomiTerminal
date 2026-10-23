@@ -4722,6 +4722,7 @@ dependencies = [
  "maomi-ssh",
  "maomi-term",
  "maomi-vault",
+ "maomi-workbench",
  "raw-window-handle",
  "serde",
  "serde_json",
@@ -4743,6 +4744,18 @@ dependencies = [
  "thiserror 2.0.21",
  "windows 0.62.2",
  "zeroize",
+]
+
+[[package]]
+name = "maomi-workbench"
+version = "0.2.0"
+dependencies = [
+ "async-channel",
+ "etcetera",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

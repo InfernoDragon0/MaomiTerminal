@@ -2,7 +2,7 @@
 //! status bar. Each window has its own workspace and tab set.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -21,6 +21,7 @@ use maomi_config::{PaneLayout, ShellLayout, TabLayout, WindowLayout};
 use maomi_term::{PtySession, SessionOptions, Shell, available_shells, default_shell};
 
 use super::agent;
+use super::board::{BoardPage, BoardPageEvent, CardDrawer, CloseDrawer};
 use super::drawer::DragPreview;
 use super::hosts::{self, HostsEvent, HostsPanel};
 use super::pane::{Pane, PaneEvent, display_path};
@@ -28,6 +29,7 @@ use super::settings_page::SettingsPage;
 use super::snippets::{self, SnippetsEvent, SnippetsPanel, TabChoice};
 use super::ssh;
 use super::tree::{Direction, DropZone, PaneTree};
+use super::workbench::{WorkbenchEvent, WorkbenchPanel};
 use super::{LaunchOptions, actions::*};
 use crate::updates::{self, UpdateState};
 use crate::{Mode, Palette, Skin, TerminalViewEvent, Theme, set_theme, settings};
@@ -44,6 +46,7 @@ enum Dock {
     Sessions,
     Hosts,
     Snippets,
+    Workbench,
 }
 
 pub struct Workspace {
@@ -55,6 +58,13 @@ pub struct Workspace {
     snippets_panel: Option<Entity<SnippetsPanel>>,
     /// Created the first time the Hosts dock opens.
     hosts_panel: Option<Entity<HostsPanel>>,
+    /// Created the first time the Workbench dock opens.
+    workbench_panel: Option<Entity<WorkbenchPanel>>,
+    /// A Workbench plan's board replaces the panes (not the dock) while shown.
+    show_board: bool,
+    board_page: Option<Entity<BoardPage>>,
+    /// Floats over the centre; shows nothing until a card is opened.
+    card_drawer: Entity<CardDrawer>,
     launch: LaunchOptions,
     next_id: u64,
     /// The user confirmed closing the window although commands were running.
@@ -84,6 +94,10 @@ impl Workspace {
             dock: Dock::Sessions,
             snippets_panel: None,
             hosts_panel: None,
+            workbench_panel: None,
+            show_board: false,
+            board_page: None,
+            card_drawer: cx.new(CardDrawer::new),
             launch,
             next_id: 0,
             close_confirmed: false,
@@ -97,6 +111,10 @@ impl Workspace {
             cx.observe_global_in::<settings::Settings>(window, |ws, _, cx| ws.apply_settings(cx)),
             cx.observe_window_appearance(window, |_, _, cx| settings::sync_system_theme(cx)),
             cx.observe_global::<updates::Updates>(|_, cx| cx.notify()),
+            cx.observe(&this.card_drawer, |_, _, cx| cx.notify()),
+            cx.subscribe(&this.card_drawer, |ws, _, _: &CloseDrawer, cx| {
+                ws.set_board_card(None, cx)
+            }),
         ];
         if let Some(layout) = this.launch.restore.take() {
             this.restore(layout, window, cx);
@@ -325,9 +343,10 @@ impl Workspace {
             ws.on_pane_event(pane.clone(), event, window, cx)
         });
         let weak = pane.downgrade();
-        let focus = cx.on_focus_in(&pane.focus_handle(cx), window, move |ws, _, cx| {
+        let focus = cx.on_focus_in(&pane.focus_handle(cx), window, move |ws, window, cx| {
             if let Some(pane) = weak.upgrade() {
                 ws.pane_focused(&pane, cx);
+                ws.follow_focused_cwd(window, cx);
             }
         });
         self.pane_subscriptions
@@ -539,7 +558,90 @@ impl Workspace {
             self._observers.push(events);
             self.hosts_panel = Some(panel);
         }
+        if dock == Dock::Workbench && self.workbench_panel.is_none() {
+            let start_dir = self.focused_cwd(cx);
+            let panel = cx.new(|cx| WorkbenchPanel::new(start_dir, window, cx));
+            let events = cx.subscribe_in(&panel, window, |ws, _, event, window, cx| {
+                ws.on_workbench_event(event, window, cx)
+            });
+            self._observers.push(events);
+            self.workbench_panel = Some(panel);
+        }
+        if dock == Dock::Workbench {
+            self.follow_focused_cwd(window, cx);
+        }
         cx.notify();
+    }
+
+    fn on_workbench_event(
+        &mut self,
+        event: &WorkbenchEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            WorkbenchEvent::OpenBoard(plan) => self.open_board(plan.clone(), window, cx),
+            WorkbenchEvent::OpenCard { plan, card } => {
+                let (plan, card) = (plan.clone(), card.clone());
+                self.set_board_card(Some(card.clone()), cx);
+                self.card_drawer
+                    .update(cx, |drawer, cx| drawer.show(plan, card, cx));
+            }
+            WorkbenchEvent::Collapse => {
+                self.dock_open = false;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Shows a plan's board in the centre. Clicking a tab goes back to the terminals.
+    fn open_board(&mut self, plan: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        match &self.board_page {
+            Some(page) => page.update(cx, |page, cx| page.set_plan(plan, cx)),
+            None => {
+                let page = cx.new(|cx| BoardPage::new(plan, cx));
+                let events = cx.subscribe_in(&page, window, |ws, page, event, _, cx| match event {
+                    BoardPageEvent::OpenCard(card) => {
+                        let plan = page.read(cx).plan().to_owned();
+                        let card = card.clone();
+                        ws.set_board_card(Some(card.clone()), cx);
+                        ws.card_drawer
+                            .update(cx, |drawer, cx| drawer.show(plan, card, cx));
+                    }
+                    BoardPageEvent::CloseCard => {
+                        ws.card_drawer.update(cx, |drawer, cx| drawer.close(cx));
+                        ws.set_board_card(None, cx);
+                    }
+                });
+                self._observers.push(events);
+                self.board_page = Some(page);
+            }
+        }
+        if let Some(open) = self.card_drawer.read(cx).card().map(str::to_owned) {
+            self.set_board_card(Some(open), cx);
+        }
+        self.show_board = true;
+        cx.notify();
+    }
+
+    fn focused_cwd(&self, cx: &App) -> Option<PathBuf> {
+        self.focused_pane()
+            .and_then(|pane| pane.read(cx).cwd().map(Path::to_path_buf))
+    }
+
+    /// Points the Workbench dock at the focused terminal's project, when that project has a board.
+    fn follow_focused_cwd(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(panel), Some(dir)) = (self.workbench_panel.clone(), self.focused_cwd(cx)) else {
+            return;
+        };
+        panel.update(cx, |panel, cx| panel.follow_dir(dir, window, cx));
+    }
+
+    /// Outlines the card the drawer shows on the board.
+    fn set_board_card(&mut self, card: Option<String>, cx: &mut Context<Self>) {
+        if let Some(page) = &self.board_page {
+            page.update(cx, |page, cx| page.set_open_card(card, cx));
+        }
     }
 
     fn on_hosts_event(&mut self, event: &HostsEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -602,6 +704,7 @@ impl Workspace {
     /// Focusing a pane always shows the terminals (tab clicks, new tabs, splits).
     fn focus_pane(&mut self, pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
         self.show_settings = false;
+        self.show_board = false;
         if let Some(tab) = self.tab_of(pane) {
             self.active = tab;
             self.tabs[tab].focused = pane.clone();
@@ -630,7 +733,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match event {
-            PaneEvent::Changed => cx.notify(),
+            PaneEvent::Changed => {
+                // A `cd` in the focused terminal can move the Workbench to another project.
+                if self.focused_pane().as_ref() == Some(&pane) {
+                    self.follow_focused_cwd(window, cx);
+                }
+                cx.notify()
+            }
             PaneEvent::SplitRight => self.split(&pane, Axis::Horizontal, window, cx),
             PaneEvent::SplitDown => self.split(&pane, Axis::Vertical, window, cx),
             PaneEvent::PaneDropped(moving, zone) => {
@@ -908,7 +1017,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let tabs = self.tabs.iter().enumerate().map(|(i, tab)| {
-            let on = i == self.active;
+            // Like Settings, a board in the centre leaves no tab active.
+            let on = i == self.active && !self.show_board;
             let title: SharedString = tab.focused.read(cx).title().into();
             let id = tab.id;
             let (hover_bg, emph, x_hover) = (
@@ -1243,6 +1353,18 @@ impl Workspace {
                 )
                 .on_click(
                     cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Snippets, window, cx)),
+                ),
+            )
+            .child(
+                rail_button(
+                    "rail-workbench",
+                    Icon::new(gpui_kit::assets::IconName::SquareKanban),
+                    "Workbench boards",
+                    !self.show_settings && self.dock == Dock::Workbench,
+                    true,
+                )
+                .on_click(
+                    cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Workbench, window, cx)),
                 ),
             )
             .child(div().flex_1())
@@ -1743,20 +1865,31 @@ impl Render for Workspace {
                             d.child(div().flex_1().min_w_0().min_h_0().child(page.clone()))
                         }
                         _ => d
-                            .when(self.dock_open, |d| {
-                                match (self.dock, &self.snippets_panel, &self.hosts_panel) {
-                                    (Dock::Snippets, Some(panel), _) => d.child(panel.clone()),
-                                    (Dock::Hosts, _, Some(panel)) => d.child(panel.clone()),
-                                    _ => d.child(self.render_dock(p, cx)),
+                            .when(self.dock_open, |d| match self.dock {
+                                Dock::Snippets if self.snippets_panel.is_some() => {
+                                    d.children(self.snippets_panel.clone())
                                 }
+                                Dock::Hosts if self.hosts_panel.is_some() => {
+                                    d.children(self.hosts_panel.clone())
+                                }
+                                Dock::Workbench if self.workbench_panel.is_some() => {
+                                    d.children(self.workbench_panel.clone())
+                                }
+                                _ => d.child(self.render_dock(p, cx)),
                             })
                             .child(
                                 div()
+                                    .relative()
                                     .flex_1()
                                     .min_w_0()
                                     .min_h_0()
-                                    .p(px(6.))
-                                    .children(centre),
+                                    .map(|d| match &self.board_page {
+                                        Some(page) if self.show_board => d.child(page.clone()),
+                                        _ => d.p(px(6.)).children(centre),
+                                    })
+                                    .when(self.card_drawer.read(cx).is_open(), |d| {
+                                        d.child(self.card_drawer.clone())
+                                    }),
                             ),
                     }),
             )

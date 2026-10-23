@@ -1,0 +1,29 @@
+{
+  "cardTypes": [
+    {
+      "id": "mockup",
+      "label": "mockup",
+      "color": "c1"
+    },
+    {
+      "id": "infra",
+      "label": "infra",
+      "color": "c2"
+    },
+    {
+      "id": "core",
+      "label": "core",
+      "color": "c3"
+    },
+    {
+      "id": "ui",
+      "label": "ui",
+      "color": "c4"
+    },
+    {
+      "id": "later",
+      "label": "later",
+      "color": "c5"
+    }
+  ]
+}

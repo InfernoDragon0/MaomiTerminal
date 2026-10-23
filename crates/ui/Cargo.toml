@@ -12,6 +12,7 @@ maomi-term.workspace = true
 maomi-config.workspace = true
 maomi-vault.workspace = true
 maomi-ssh.workspace = true
+maomi-workbench.workspace = true
 zeroize = "1"
 async-channel.workspace = true
 anyhow.workspace = true

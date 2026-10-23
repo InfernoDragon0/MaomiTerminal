@@ -1,0 +1,39 @@
+{
+  "id": "workbench",
+  "title": "Workbench boards page",
+  "status": "review",
+  "version": 5,
+  "versions": [
+    {
+      "v": 3,
+      "at": 1792743420820,
+      "bytes": 40172,
+      "by": "9fdb49c9-0a03-4424-80ef-b5e270cf37f8",
+      "note": "User feedback: drawer floats over the board; left panel = project dropdown + plan tree (folder icon + %, plan > column sections > cards, cards draggable later)."
+    },
+    {
+      "v": 4,
+      "at": 1792743625513,
+      "bytes": 43182,
+      "by": "9fdb49c9-0a03-4424-80ef-b5e270cf37f8",
+      "note": "Tree is now a left dock beside the terminals; 'Open board' (dock header + per-plan hover button) swaps the centre to the board page; X on the board returns to terminals."
+    },
+    {
+      "v": 5,
+      "at": 1792743942046,
+      "bytes": 43081,
+      "by": "9fdb49c9-0a03-4424-80ef-b5e270cf37f8",
+      "note": "No 'Terminals' / close button: clicking a title-bar tab returns to the terminals (no tab is active while the board shows, like Settings)."
+    }
+  ],
+  "createdAt": 1792742823039,
+  "updatedAt": 1792743942046,
+  "plans": [
+    {
+      "plan": "p-mvkoo3cvccbh",
+      "milestone": "m-mvkoo3cvhp90"
+    }
+  ],
+  "plan": "p-mvkoo3cvccbh",
+  "milestone": "m-mvkoo3cvhp90"
+}

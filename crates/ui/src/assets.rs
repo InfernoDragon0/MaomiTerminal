@@ -52,6 +52,26 @@ const ICONS: &[(&str, &[u8])] = &[
         "icons/droplet.svg",
         include_bytes!("../assets/icons/droplet.svg"),
     ),
+    (
+        "icons/square-kanban.svg",
+        include_bytes!("../assets/icons/square-kanban.svg"),
+    ),
+    (
+        "icons/message-square.svg",
+        include_bytes!("../assets/icons/message-square.svg"),
+    ),
+    (
+        "icons/clock.svg",
+        include_bytes!("../assets/icons/clock.svg"),
+    ),
+    (
+        "icons/square-check.svg",
+        include_bytes!("../assets/icons/square-check.svg"),
+    ),
+    (
+        "icons/file-code.svg",
+        include_bytes!("../assets/icons/file-code.svg"),
+    ),
 ];
 
 pub struct Assets;

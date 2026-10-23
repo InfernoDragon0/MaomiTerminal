@@ -1,0 +1,3 @@
+{"at":1792467736036,"actor":"1e965054-47c5-449d-ab4e-6d0c049ef039","planId":"p-mvg50cth6ccf","op":"createPlan","summary":"created plan 'MaomiTerminal v1: local shell tabs + splits (GPUI)' with 12 milestones","rev":1}
+{"at":1792467798467,"actor":"1e965054-47c5-449d-ab4e-6d0c049ef039","planId":"p-mvg50cth6ccf","op":"updateMilestone","summary":"updated 'Mockup: main window (Aurora + Onyx)': type mockup, design 3","rev":2,"milestoneId":"m-mvg50ctinvuq"}
+{"at":1792467798467,"actor":"1e965054-47c5-449d-ab4e-6d0c049ef039","planId":"p-mvg50cth6ccf","op":"updateMilestone","summary":"updated 'Workspace scaffold, licences, CI': type infra, design 2","rev":2,"milestoneId":"m-mvg50ctibkma"}

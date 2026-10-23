@@ -36,6 +36,7 @@ maomi-term = { path = "crates/term" }
 maomi-config = { path = "crates/config" }
 maomi-vault = { path = "crates/vault" }
 maomi-ssh = { path = "crates/ssh" }
+maomi-workbench = { path = "crates/workbench" }
 
 [workspace.lints.rust]
 # maomi-term may opt out later (PTY / OS handles); give it its own [lints] table when it does.

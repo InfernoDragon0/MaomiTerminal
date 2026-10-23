@@ -1,6 +1,7 @@
 //! The app shell: windows, tabs, split panes, activity rail and sessions dock.
 
 mod agent;
+mod board;
 mod drawer;
 mod hosts;
 mod pane;
@@ -12,6 +13,7 @@ mod ssh_keys;
 mod standalone;
 mod title_strip;
 mod tree;
+mod workbench;
 mod workspace;
 
 use gpui_kit::component::TitleBar;
@@ -78,6 +80,7 @@ impl Default for LaunchOptions {
 pub(crate) fn init(cx: &mut App) {
     snippets::install(cx);
     hosts::install(cx);
+    workbench::install(cx);
     // The WSL distro list starts wsl.exe; reading it now keeps the shell menu from waiting.
     std::thread::spawn(maomi_term::available_shells);
     std::thread::spawn(agent::sweep_stale);

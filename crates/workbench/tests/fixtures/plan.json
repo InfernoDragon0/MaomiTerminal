@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "id": "p-mvg50cth6ccf",
+  "projectKey": "f--GitProjects-Automation-MaomiTerminal",
+  "projectName": "MaomiTerminal",
+  "title": "MaomiTerminal v1: local shell tabs + splits (GPUI)",
+  "brief": "A cross-platform terminal app in Rust, UI in GPUI (via gpui-kit, same pin as GitDragon), terminal engine = portable-pty ",
+  "status": "active",
+  "milestones": [
+    {
+      "id": "m-mvg50ctiei4b",
+      "title": "maomi-term: PTY session + VT grid",
+      "description": "UI-free terminal engine.\n- Shell discovery: Windows pwsh > powershell > cmd (override in config); Un",
+      "column": "done",
+      "order": 2,
+      "tasks": [
+        {
+          "id": "t-mvg50ctiqqd5",
+          "text": "Shell discovery per OS",
+          "done": true
+        },
+        {
+          "id": "t-mvg50ctistc6",
+          "text": "PtySession spawn/resize/write/kill",
+          "done": true
+        },
+        {
+          "id": "t-mvg50cti7p47",
+          "text": "Reader loop into alacritty_terminal Term with per-frame coalescing",
+          "done": true
+        }
+      ],
+      "assignees": [
+        "92d005a0-d4c7-4711-b537-21c42a8422d4"
+      ],
+      "notes": [
+        {
+          "id": "n-mvg7c18a4usp",
+          "author": "92d005a0-d4c7-4711-b537-21c42a8422d4",
+          "text": "20 tests pass on Windows (unit + real ConPTY: echo, resize, exit code, kill, wak",
+          "at": 1792471640116
+        }
+      ],
+      "createdAt": 1792467736036,
+      "updatedAt": 1792471640116,
+      "weight": 18,
+      "size": "L",
+      "agent": {
+        "model": "opus",
+        "reason": "Threading, ConPTY quirks and alacritty_terminal internals"
+      },
+      "dependsOn": [
+        "m-mvg50ctibkma"
+      ],
+      "type": "core",
+      "design": [
+        "s-mvg51gcubkc5",
+        "s-mvg51gcd568o"
+      ],
+      "files": [
+        "crates/term/src/session.rs#PtySession",
+        "crates/term/src/snapshot.rs#GridSnapshot",
+        "crates/term/src/shell.rs#available_shells",
+        "crates/term/src/osc.rs#OscScanner",
+        "crates/term/src/integration.rs#inject",
+        "crates/term/tests/session.rs",
+        "tools/ai-tasks/conpty.md"
+      ]
+    },
+    {
+      "id": "m-mvgdvetgnz7z",
+      "title": "v3: Live shared terminal sessions",
+      "description": "Host owns the PTY/SSH channel; streams output bytes through a relay (WebSocket) to guests, guest inp",
+      "column": "backlog",
+      "order": 0,
+      "tasks": [],
+      "assignees": [],
+      "notes": [],
+      "createdAt": 1792482621891,
+      "updatedAt": 1792482621891,
+      "size": "XL",
+      "type": "later",
+      "agent": {
+        "model": "opus",
+        "reason": "Networking, E2E crypto and a new remote-input attack surface"
+      },
+      "dependsOn": [
+        "m-mvg50ctjz0z4",
+        "m-mvjckknzi6h2",
+        "m-mvjckko05tj3",
+        "m-mvjckko05hvn",
+        "m-mvjckko0qmza",
+        "m-mvjckko0b8uv"
+      ]
+    },
+    {
+      "id": "m-mvg50ctinvuq",
+      "title": "Mockup: main window (Aurora + Onyx + Mochi, pane drawer)",
+      "description": "HTML mockup of the v1 shell so the user approves the look before UI cards start.\n- Import the AgentS",
+      "column": "done",
+      "order": 1,
+      "tasks": [
+        {
+          "id": "t-mvg50ctiip14",
+          "text": "Import AgentSummary design system and add Onyx tokens",
+          "done": true
+        },
+        {
+          "id": "t-mvg50cti3p57",
+          "text": "Main window page (tabs, rail, dock, 2x2 split terminals)",
+          "done": true
+        },
+        {
+          "id": "t-mvg50ctijrmy",
+          "text": "Settings page",
+          "done": true
+        }
+      ],
+      "assignees": [],
+      "notes": [
+        {
+          "id": "n-mvg5wsk6awis",
+          "author": "1e965054-47c5-449d-ab4e-6d0c049ef039",
+          "text": "Mockup deviations to eyeball: (1) Onyx LIGHT c1..c5 + fire gradient were derived",
+          "at": 1792469249427
+        }
+      ],
+      "createdAt": 1792467736036,
+      "updatedAt": 1792470904369,
+      "weight": 8,
+      "size": "M",
+      "agent": {
+        "model": "sonnet",
+        "reason": "HTML/CSS from an existing design system; no logic"
+      },
+      "gate": true,
+      "type": "mockup",
+      "design": [
+        "s-mvg51gdd9mir",
+        "s-mvg51gdxuag3",
+        "s-mvg51gegevm2",
+        "s-mvg64ekmh1lq"
+      ]
+    }
+  ],
+  "createdBy": "1e965054-47c5-449d-ab4e-6d0c049ef039",
+  "createdAt": 1792467736036,
+  "updatedAt": 1792741499177,
+  "rev": 156,
+  "projectPath": "F:\\GitProjects\\Automation\\MaomiTerminal"
+}
