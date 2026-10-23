@@ -435,6 +435,11 @@ impl PtySession {
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "MaomiTerminal");
         cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        // We render OSC 8 links, but CLI tools (Claude Code among them) only emit them for
+        // terminals they recognise. A value the user set themselves still wins.
+        if std::env::var_os("FORCE_HYPERLINK").is_none() {
+            cmd.env("FORCE_HYPERLINK", "1");
+        }
         for (key, value) in &options.env {
             cmd.env(key, value);
         }
