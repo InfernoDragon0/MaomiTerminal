@@ -1,0 +1,31 @@
+{
+  "id": "workbench-edit",
+  "title": "Workbench edits + tabbed card drawer",
+  "status": "draft",
+  "version": 2,
+  "versions": [
+    {
+      "v": 1,
+      "at": 1792756849362,
+      "bytes": 55372,
+      "by": "9fdb49c9-0a03-4424-80ef-b5e270cf37f8"
+    },
+    {
+      "v": 2,
+      "at": 1792757810473,
+      "bytes": 55376,
+      "by": "9fdb49c9-0a03-4424-80ef-b5e270cf37f8",
+      "note": "More space between the progress edge and the tabs (user)."
+    }
+  ],
+  "createdAt": 1792756849362,
+  "updatedAt": 1792757810473,
+  "plans": [
+    {
+      "plan": "p-mvkoo3cvccbh",
+      "milestone": "m-mvkoo3cxfw86"
+    }
+  ],
+  "plan": "p-mvkoo3cvccbh",
+  "milestone": "m-mvkoo3cxfw86"
+}

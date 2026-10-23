@@ -1,4 +1,4 @@
-//! A Workbench plan as a read-only kanban board in the centre, and the card drawer that floats over
+//! A Workbench plan as a kanban board in the centre, and the card drawer that floats over
 //! the centre. Both read the shared [`WorkbenchStore`], so a plan a Claude session writes redraws
 //! by itself.
 
@@ -7,26 +7,34 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Icon, IconName};
+use gpui_kit::component::{Disableable as _, Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, EventEmitter, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, linear_color_stop, linear_gradient, px,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, Focusable as _, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, linear_color_stop,
+    linear_gradient, px,
 };
-use maomi_workbench::{Card, Column, Plan, ProjectSettings};
+use maomi_workbench::{Card, Column, HandoffInfo, Plan, ProjectSettings};
 
+use super::drawer::DragPreview;
+use super::wlo;
 use super::workbench::{
-    WorkbenchStore, column_color, column_label, load_board, model_color, percent, shown_column,
-    slot_color,
+    CardEdit, WorkbenchStore, answer_question, column_color, column_label, edit_card, load_board,
+    model_color, percent, reload_handoff, shown_column, slot_color,
 };
 use crate::{Palette, Theme};
 
 /// What the board asks the workspace to do.
 pub enum BoardPageEvent {
     OpenCard(String),
+    /// Show the plan's whole "where we left off" in the drawer.
+    OpenHandoff,
     /// A click on the board background closes the drawer.
     CloseCard,
 }
@@ -35,20 +43,41 @@ pub struct BoardPage {
     plan: PathBuf,
     /// The card the drawer shows, outlined on the board.
     open_card: Option<String>,
+    /// "Where we left off" peek: open, and whether the pointer is on the button or the peek.
+    peek_open: bool,
+    peek_button: bool,
+    peek_card: bool,
+    /// Answer box for the handoff's first open question.
+    answer: Entity<InputState>,
+    busy: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<BoardPageEvent> for BoardPage {}
 
 impl BoardPage {
-    pub fn new(plan: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new(plan: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         if let Some(dir) = plan.parent() {
             load_board(dir.to_owned(), cx);
         }
+        let answer = cx.new(|cx| InputState::new(window, cx).placeholder("Answer\u{2026}"));
+        let enter = cx.subscribe_in(&answer, window, |page, _, event, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                page.submit_answer(None, window, cx);
+            }
+        });
         Self {
             plan,
             open_card: None,
-            _subscriptions: vec![cx.observe_global::<WorkbenchStore>(|_, cx| cx.notify())],
+            peek_open: false,
+            peek_button: false,
+            peek_card: false,
+            answer,
+            busy: false,
+            _subscriptions: vec![
+                cx.observe_global::<WorkbenchStore>(|_, cx| cx.notify()),
+                enter,
+            ],
         }
     }
 
@@ -69,7 +98,13 @@ impl BoardPage {
         cx.notify();
     }
 
-    fn render_header(&self, plan: &Plan, p: &Palette) -> impl IntoElement {
+    fn render_header(
+        &self,
+        plan: &Plan,
+        info: &HandoffInfo,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let pct = percent(plan.progress());
         let in_review = plan
             .cards
@@ -94,7 +129,6 @@ impl BoardPage {
                     .min_w_0()
                     .child(
                         div()
-                            .flex_1()
                             .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
@@ -104,6 +138,8 @@ impl BoardPage {
                             .text_color(p.fg_emph.to_hsla())
                             .child(plan.title.clone()),
                     )
+                    .child(self.wlo_button(plan, info, p, cx))
+                    .child(div().flex_1())
                     .child(chip(
                         plan.status.as_str().to_owned(),
                         status_color(plan, p),
@@ -160,8 +196,7 @@ impl BoardPage {
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .child(first_line(&plan.brief)),
-                    )
-                    .child(chip("read-only".to_owned(), p.muted.to_hsla(), p)),
+                    ),
             )
     }
 
@@ -192,6 +227,11 @@ impl BoardPage {
         let needs_user = card.column == Column::Review && card.review.is_some();
         let id = card.id.clone();
         let (hover, line_strong) = (p.surface_3.to_hsla(), p.line_strong.to_hsla());
+        let drag = DraggedBoardCard {
+            card: card.id.clone(),
+            column: card.column.clone(),
+        };
+        let drag_name: SharedString = card.title.clone().into();
 
         let face = div()
             .id(SharedString::from(format!("wb-board-card-{}", card.id)))
@@ -219,6 +259,10 @@ impl BoardPage {
                 cx.stop_propagation();
                 cx.emit(BoardPageEvent::OpenCard(id.clone()));
             }))
+            .on_drag(drag, move |_, _, _, cx| {
+                let name = drag_name.clone();
+                cx.new(|_| DragPreview { name })
+            })
             // Type colour as a soft top tint, never a side stripe.
             .when_some(type_color, |d, color| {
                 d.child(
@@ -327,9 +371,13 @@ impl Render for BoardPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Theme::current(cx).palette();
         let store = cx.global::<WorkbenchStore>();
-        let found = store
-            .plan(&self.plan)
-            .map(|(board, entry)| (entry.plan.clone(), board.settings.clone()));
+        let found = store.plan(&self.plan).map(|(board, entry)| {
+            (
+                entry.plan.clone(),
+                board.settings.clone(),
+                entry.handoff.clone(),
+            )
+        });
         let loaded = self.plan.parent().is_some_and(|d| store.board(d).is_some());
         let page = div()
             .id("wb-board-page")
@@ -339,7 +387,7 @@ impl Render for BoardPage {
             .min_h_0()
             .bg(p.bg.to_hsla())
             .on_click(cx.listener(|_, _, _, cx| cx.emit(BoardPageEvent::CloseCard)));
-        let Some((plan, settings)) = found else {
+        let Some((plan, settings, handoff)) = found else {
             return page.child(
                 div()
                     .flex_1()
@@ -358,7 +406,8 @@ impl Render for BoardPage {
             .iter()
             .map(|column| self.render_column(&plan, column, &settings, p, cx))
             .collect();
-        page.child(self.render_header(&plan, p)).child(
+        let header = self.render_header(&plan, &handoff, p, cx);
+        page.child(header).child(
             div()
                 .id("wb-columns")
                 .flex()
@@ -390,6 +439,7 @@ impl BoardPage {
             .collect();
         cards.sort_by(|a, b| a.order.total_cmp(&b.order));
         let color = column_color(column, p);
+        let target = column.clone();
         let body: Vec<AnyElement> = cards
             .iter()
             .map(|card| self.render_card(plan, card, settings, p, cx))
@@ -404,6 +454,15 @@ impl BoardPage {
             .border_1()
             .border_color(p.line.to_hsla())
             .bg(p.surface.to_hsla())
+            // Dropping a card here moves it to this column.
+            .drag_over::<DraggedBoardCard>(move |style, _, _, _| {
+                style.border_color(color).bg(color.opacity(0.08))
+            })
+            .on_drop(
+                cx.listener(move |page, dragged: &DraggedBoardCard, window, cx| {
+                    page.move_card(dragged, target.clone(), window, cx)
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -469,424 +528,290 @@ impl BoardPage {
     }
 }
 
-/// Asks the workspace to close the drawer.
-pub struct CloseDrawer;
-
-/// The card drawer. It floats over the centre (terminals or a board) and reads the card from the
-/// store each frame, so it follows live edits.
-pub struct CardDrawer {
-    target: Option<(PathBuf, String)>,
-    _subscriptions: Vec<Subscription>,
-}
-
-impl EventEmitter<CloseDrawer> for CardDrawer {}
-
-impl CardDrawer {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        Self {
-            target: None,
-            _subscriptions: vec![cx.observe_global::<WorkbenchStore>(|drawer, cx| {
-                if drawer.target.is_some() {
-                    cx.notify();
-                }
-            })],
-        }
-    }
-
-    pub fn show(&mut self, plan: PathBuf, card: String, cx: &mut Context<Self>) {
-        if let Some(dir) = plan.parent() {
-            load_board(dir.to_owned(), cx);
-        }
-        self.target = Some((plan, card));
-        cx.notify();
-    }
-
-    pub fn close(&mut self, cx: &mut Context<Self>) {
-        self.target = None;
-        cx.notify();
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.target.is_some()
-    }
-
-    pub fn card(&self) -> Option<&str> {
-        self.target.as_ref().map(|(_, card)| card.as_str())
-    }
-}
-
-impl Render for CardDrawer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = Theme::current(cx).palette();
-        let Some((path, card_id)) = self.target.clone() else {
-            return div().into_any_element();
-        };
-        let found = cx
-            .global::<WorkbenchStore>()
-            .plan(&path)
-            .map(|(board, entry)| (entry.plan.clone(), board.settings.clone()));
-        let Some((plan, settings)) = found else {
-            return div().into_any_element();
-        };
-        let Some(card) = plan.cards.iter().find(|c| c.id == card_id) else {
-            return div().into_any_element();
-        };
-        let card_type = settings.card_type(card.type_id.as_deref());
-        let type_color = card_type.and_then(|t| slot_color(&t.color, p));
-        let pct = percent(card.progress());
-
-        let mut body: Vec<AnyElement> = vec![section(
-            "Description",
-            if card.description.trim().is_empty() {
-                muted_text("No description", p)
+/// The plan's main action, as in the Workbench toolbar: a rainbow "Where we left off" button. Hover
+/// shows the peek (Next with Copy prompt, the first open question to answer); a click opens the
+/// whole handoff in the drawer.
+impl BoardPage {
+    fn wlo_button(
+        &self,
+        plan: &Plan,
+        info: &HandoffInfo,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let questions = wlo::open_questions(info);
+        let hover = p.surface_2.to_hsla();
+        let face = div()
+            .id("wb-wlo")
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .h(px(30.))
+            .px(px(12.))
+            .rounded(px(9.))
+            .bg(p.surface.to_hsla())
+            .hover(move |s| s.bg(hover))
+            .text_size(px(12.5))
+            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+            .text_color(p.fg_emph.to_hsla())
+            .cursor_pointer()
+            .on_hover(cx.listener(|page, hovered: &bool, window, cx| {
+                page.peek_button = *hovered;
+                page.hover_changed(window, cx);
+            }))
+            .on_click(cx.listener(|page, _, _, cx| {
+                cx.stop_propagation();
+                page.peek_open = false;
+                cx.emit(BoardPageEvent::OpenHandoff);
+            }))
+            .child(Icon::new(AssetIcon::Play).size(px(12.)))
+            .child(if questions > 0 {
+                format!(
+                    "Where we left off ({questions} open {})",
+                    if questions == 1 {
+                        "question"
+                    } else {
+                        "questions"
+                    }
+                )
             } else {
-                div()
-                    .text_size(px(12.5))
-                    .child(TextView::markdown(
-                        SharedString::from(format!("wb-desc-{card_id}")),
-                        card.description.clone(),
-                    ))
-                    .into_any_element()
-            },
-            p,
-        )];
-        body.push(section("Tasks", self.render_tasks(card, p), p));
-        if !card.depends_on.is_empty() {
-            let deps: Vec<AnyElement> = card
-                .depends_on
-                .iter()
-                .enumerate()
-                .map(|(i, dep)| {
-                    let other = plan.cards.iter().find(|c| &c.id == dep);
-                    let (title, color) = match other {
-                        Some(c) => (c.title.clone(), column_color(&c.column, p)),
-                        None => (dep.clone(), p.muted.to_hsla()),
-                    };
-                    let (hover, path, dep) = (p.surface_3.to_hsla(), path.clone(), dep.clone());
-                    div()
-                        .id(("wb-dep", i))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(8.))
-                        .py(px(6.))
-                        .rounded(px(8.))
-                        .bg(p.surface_2.to_hsla())
-                        .text_size(px(12.))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .on_click(cx.listener(move |drawer, _, _, cx| {
-                            drawer.show(path.clone(), dep.clone(), cx)
-                        }))
-                        .child(dot(color, 8.))
-                        .child(title)
-                        .into_any_element()
-                })
-                .collect();
-            body.push(section(
-                "Depends on",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .children(deps)
-                    .into_any_element(),
-                p,
-            ));
-        }
-        if !card.files.is_empty() || card.verify.is_some() {
-            let mono = crate::TERMINAL_FAMILY;
-            let mut files: Vec<AnyElement> = card
-                .files
-                .iter()
-                .map(|f| {
-                    div()
-                        .font_family(mono)
-                        .text_size(px(12.))
-                        .text_color(p.fg_emph.to_hsla())
-                        .child(f.clone())
-                        .into_any_element()
-                })
-                .collect();
-            if let Some(verify) = &card.verify {
-                files.push(
-                    div()
-                        .flex()
-                        .gap(px(6.))
-                        .text_size(px(12.))
-                        .text_color(p.muted.to_hsla())
-                        .child("Verify:")
-                        .child(
-                            div()
-                                .font_family(mono)
-                                .text_color(p.fg_emph.to_hsla())
-                                .child(verify.clone()),
-                        )
-                        .into_any_element(),
-                );
-            }
-            body.push(section(
-                "Files",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .children(files)
-                    .into_any_element(),
-                p,
-            ));
-        }
-        let reviews: Vec<AnyElement> = [("Review asked", &card.review), ("Checked", &card.check)]
-            .into_iter()
-            .filter_map(|(what, request)| {
-                let r = request.as_ref()?;
-                let who = person(&r.by);
-                let reason = r.reason.clone().unwrap_or_default();
-                Some(note_box(
-                    format!("{what} by {who} \u{b7} {}", ago(r.at)),
-                    reason,
-                    p,
-                ))
+                "Where we left off".to_owned()
             })
-            .collect();
-        if !reviews.is_empty() {
-            body.push(section(
-                "Review",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .children(reviews)
-                    .into_any_element(),
-                p,
-            ));
-        }
-        if !card.notes.is_empty() {
-            let notes: Vec<AnyElement> = card
-                .notes
-                .iter()
-                .rev()
-                .map(|n| {
-                    let phase = n.phase.as_deref().map(|ph| format!(" \u{b7} {ph}"));
-                    note_box(
-                        format!(
-                            "{}{} \u{b7} {}",
-                            person(&n.author),
-                            phase.unwrap_or_default(),
-                            ago(n.at)
-                        ),
-                        n.text.clone(),
-                        p,
-                    )
-                })
-                .collect();
-            body.push(section(
-                "Notes",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .children(notes)
-                    .into_any_element(),
-                p,
-            ));
-        }
-
+            .when(questions > 0, |d| {
+                d.child(div().size(px(7.)).rounded(px(4.)).bg(p.warn.to_hsla()))
+            });
+        let peek = (self.peek_open && info.handoff.is_some())
+            .then(|| gpui_kit::deferred(self.wlo_peek(plan, info, p, cx)).with_priority(1));
         div()
-            .id("wb-drawer")
+            .relative()
+            .flex_none()
+            .child(aurora_ring(face, 9., p))
+            .children(peek)
+            .into_any_element()
+    }
+
+    fn wlo_peek(
+        &self,
+        plan: &Plan,
+        info: &HandoffInfo,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label = |text: &'static str| {
+            div()
+                .text_size(px(10.5))
+                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                .text_color(p.muted.to_hsla())
+                .child(text.to_uppercase())
+        };
+        let copy_plan = plan.clone();
+        let question = info
+            .handoff
+            .as_ref()
+            .and_then(|h| h.open_questions().next().cloned());
+        let busy = self.busy;
+        div()
+            .id("wb-wlo-peek")
             .occlude()
             .absolute()
-            .top(px(8.))
-            .right(px(8.))
-            .bottom(px(8.))
-            .w(px(400.))
+            .top(px(38.))
+            .left_0()
+            .w(px(360.))
             .flex()
             .flex_col()
-            .rounded(px(12.))
+            .gap(px(6.))
+            .p(px(12.))
+            .rounded(px(10.))
             .border_1()
             .border_color(p.line_strong.to_hsla())
-            .bg(p.surface.to_hsla())
+            .bg(p.surface_2.to_hsla())
             .shadow_lg()
-            // Clicks inside must not reach the board under it (that closes the drawer).
+            .on_hover(cx.listener(|page, hovered: &bool, window, cx| {
+                page.peek_card = *hovered;
+                page.hover_changed(window, cx);
+            }))
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .px(px(16.))
-                    .pt(px(14.))
-                    .pb(px(12.))
-                    .border_b_1()
-                    .border_color(p.line.to_hsla())
+                    .items_center()
+                    .child(label("Next"))
+                    .child(div().flex_1())
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(type_chip(
-                                card_type.map(|t| t.label.as_str()),
-                                type_color,
-                                p,
-                            ))
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .id("wb-drawer-close")
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size(px(26.))
-                                    .rounded(px(7.))
-                                    .text_color(p.muted.to_hsla())
-                                    .hover({
-                                        let (bg, fg) = (p.surface_2.to_hsla(), p.fg_emph.to_hsla());
-                                        move |s| s.bg(bg).text_color(fg)
-                                    })
-                                    .tooltip(|window, cx| Tooltip::new("Close").build(window, cx))
-                                    .on_click(cx.listener(|drawer, _, _, cx| {
-                                        drawer.close(cx);
-                                        cx.emit(CloseDrawer);
-                                    }))
-                                    .child(Icon::new(IconName::Close).size(px(15.))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(16.))
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .text_color(p.fg_emph.to_hsla())
-                            .child(card.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(chip(
-                                column_label(&card.column).to_owned(),
-                                column_color(&card.column, p),
-                                p,
-                            ))
-                            .when_some(card.size.as_ref(), |d, size| {
-                                d.child(size_tag(size.as_str(), p))
-                            })
-                            .when_some(card.agent.as_ref(), |d, agent| {
-                                d.child(model_tag(&agent.model, p))
-                            })
-                            .child(div().flex_1())
-                            .child(avatars(&card.assignees, p)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .text_size(px(11.))
-                            .text_color(p.muted.to_hsla())
-                            .child(bar(pct, 4., p))
-                            .child(format!("{pct}%")),
+                        Button::new("wb-wlo-copy")
+                            .xsmall()
+                            .icon(Icon::new(AssetIcon::Copy))
+                            .label("Copy prompt")
+                            .on_click(move |_, window, cx| {
+                                wlo::copy_continue_prompt(&copy_plan, window, cx)
+                            }),
                     ),
             )
-            .child(
-                div()
-                    .id("wb-drawer-body")
-                    .flex_1()
-                    .min_h_0()
-                    .px(px(16.))
-                    .pb(px(20.))
-                    .overflow_y_scroll()
-                    .children(body),
-            )
-            .child(
-                div()
-                    .px(px(16.))
-                    .py(px(10.))
-                    .border_t_1()
-                    .border_color(p.line.to_hsla())
-                    .text_size(px(11.5))
-                    .text_color(p.muted.to_hsla())
-                    .child(format!(
-                        "{} \u{b7} read-only \u{b7} edits come in phase 2",
-                        card.id
-                    )),
-            )
-            .into_any_element()
-    }
-}
-
-impl CardDrawer {
-    fn render_tasks(&self, card: &Card, p: &Palette) -> AnyElement {
-        if card.tasks.is_empty() {
-            return muted_text("No tasks", p);
-        }
-        let rows: Vec<AnyElement> = card
-            .tasks
-            .iter()
-            .map(|task| {
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(9.))
-                    .px(px(4.))
-                    .py(px(5.))
+            .child(match wlo::next_step(info) {
+                Some(next) => div()
                     .text_size(px(12.5))
-                    .child(
-                        Icon::new(if task.done {
-                            AssetIcon::SquareCheck
-                        } else {
-                            AssetIcon::Square
-                        })
-                        .size(px(15.))
-                        .text_color(if task.done {
-                            p.ok.to_hsla()
-                        } else {
-                            p.muted.to_hsla()
-                        }),
-                    )
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .text_color(p.fg_emph.to_hsla())
+                    .child(wlo::clip(&next, 160)),
+                None => div()
+                    .text_size(px(12.))
+                    .text_color(p.muted.to_hsla())
+                    .child("No next step written."),
+            })
+            .when_some(question, |d, q| {
+                d.child(div().mt(px(4.)).child(label("Open question")))
+                    .child(div().text_size(px(12.5)).child(wlo::clip(&q.text, 200)))
+                    .when(!q.options.is_empty(), |d| {
+                        d.child(div().flex().flex_wrap().gap(px(6.)).children(
+                            q.options.iter().enumerate().map(|(i, option)| {
+                                let option = option.clone();
+                                Button::new(("wb-wlo-option", i))
+                                    .xsmall()
+                                    .label(wlo::clip(&option, 40))
+                                    .disabled(busy)
+                                    .on_click(cx.listener(move |page, _, window, cx| {
+                                        page.submit_answer(Some(option.clone()), window, cx)
+                                    }))
+                            }),
+                        ))
+                    })
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .when(task.done, |d| {
-                                d.text_color(p.muted.to_hsla()).line_through()
-                            })
-                            .child(task.text.clone()),
+                            .flex()
+                            .gap(px(6.))
+                            .child(div().flex_1().child(Input::new(&self.answer).small()))
+                            .child(
+                                Button::new("wb-wlo-send")
+                                    .primary()
+                                    .small()
+                                    .label("Send")
+                                    .disabled(busy)
+                                    .on_click(cx.listener(|page, _, window, cx| {
+                                        page.submit_answer(None, window, cx)
+                                    })),
+                            ),
                     )
-                    .when(task.approval && !task.done, |d| {
-                        d.child(chip("needs you".to_owned(), p.warn.to_hsla(), p))
-                    })
-                    .into_any_element()
             })
-            .collect();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .children(rows)
+            .child(
+                div()
+                    .mt(px(2.))
+                    .text_size(px(11.))
+                    .text_color(p.muted.to_hsla())
+                    .child(if info.newer_activity > 0 {
+                        format!(
+                            "{} \u{b7} click the button for the full handoff",
+                            wlo::changes_since(info.newer_activity)
+                        )
+                    } else {
+                        "Click the button for the full handoff".to_owned()
+                    }),
+            )
             .into_any_element()
+    }
+
+    /// The peek opens at once and closes a moment after the pointer leaves both the button and the
+    /// peek, so moving from one to the other (or typing an answer) keeps it.
+    fn hover_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.peek_button || self.peek_card {
+            self.peek_open = true;
+            cx.notify();
+            return;
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(150))
+                .await;
+            _ = this.update_in(cx, |page, window, cx| {
+                let typing = page.answer.focus_handle(cx).is_focused(window);
+                if !page.peek_button && !page.peek_card && !typing {
+                    page.peek_open = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Answers the first open question with the box's text or a picked option.
+    fn submit_answer(
+        &mut self,
+        option: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = option.unwrap_or_else(|| self.answer.read(cx).value().trim().to_string());
+        if self.busy || text.is_empty() {
+            return;
+        }
+        let target = cx
+            .global::<WorkbenchStore>()
+            .plan(&self.plan)
+            .and_then(|(_, entry)| {
+                let handoff = entry.handoff.handoff.as_ref()?;
+                let question = handoff.open_questions().next()?;
+                Some((handoff.id.clone(), question.id.clone()))
+            });
+        let Some((handoff, question)) = target else {
+            return;
+        };
+        self.busy = true;
+        let path = self.plan.clone();
+        let task = answer_question(&path, &handoff, &question, &text, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            _ = this.update_in(cx, |page, window, cx| {
+                page.busy = false;
+                match result {
+                    Ok(()) => {
+                        page.answer.update(cx, |a, cx| a.set_value("", window, cx));
+                        // The answer lands in `<planId>.d`, which the watcher does not see.
+                        reload_handoff(path, cx);
+                    }
+                    Err(err) => window.push_notification(Notification::error(err), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 }
 
-fn section(title: &'static str, content: AnyElement, p: &Palette) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .mt(px(14.))
-        .child(
-            div()
-                .text_size(px(11.))
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                .text_color(p.muted.to_hsla())
-                .child(title.to_uppercase()),
-        )
-        .child(content)
-        .into_any_element()
+/// Drag payload of a card on the board page; a column takes it as a move.
+#[derive(Debug, Clone)]
+pub struct DraggedBoardCard {
+    card: String,
+    column: Column,
 }
 
-fn note_box(head: String, text: String, p: &Palette) -> AnyElement {
+impl BoardPage {
+    fn move_card(
+        &mut self,
+        dragged: &DraggedBoardCard,
+        column: Column,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if dragged.column == column {
+            return;
+        }
+        let edit = CardEdit::Move {
+            column: column.clone(),
+            index: None,
+        };
+        let task = edit_card(&self.plan, &dragged.card, edit, cx);
+        cx.spawn_in(window, async move |_, cx| {
+            let result = task.await;
+            if let Err(err) = result {
+                _ = cx.update(|window, cx| window.push_notification(Notification::error(err), cx));
+            }
+        })
+        .detach();
+    }
+}
+
+pub(super) fn note_box(id: SharedString, head: String, text: String, p: &Palette) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -901,13 +826,18 @@ fn note_box(head: String, text: String, p: &Palette) -> AnyElement {
                 .text_color(p.muted.to_hsla())
                 .child(head),
         )
+        // Agents write notes in Markdown.
         .when(!text.is_empty(), |d| {
-            d.child(div().text_size(px(12.5)).child(text))
+            d.child(
+                div()
+                    .text_size(px(12.5))
+                    .child(TextView::markdown(id, text)),
+            )
         })
         .into_any_element()
 }
 
-fn muted_text(text: &'static str, p: &Palette) -> AnyElement {
+pub(super) fn muted_text(text: &'static str, p: &Palette) -> AnyElement {
     div()
         .text_size(px(12.5))
         .text_color(p.muted.to_hsla())
@@ -926,7 +856,7 @@ fn status_color(plan: &Plan, p: &Palette) -> Hsla {
 }
 
 /// A pill with a coloured dot.
-fn chip(text: String, color: Hsla, p: &Palette) -> impl IntoElement {
+pub(super) fn chip(text: String, color: Hsla, p: &Palette) -> impl IntoElement {
     div()
         .flex()
         .flex_none()
@@ -958,7 +888,7 @@ fn type_chip(label: Option<&str>, color: Option<Hsla>, p: &Palette) -> impl Into
         })
 }
 
-fn model_tag(model: &str, p: &Palette) -> impl IntoElement {
+pub(super) fn model_tag(model: &str, p: &Palette) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -1018,7 +948,7 @@ pub(super) fn avatars(ids: &[String], p: &Palette) -> impl IntoElement {
         }))
 }
 
-fn dot(color: Hsla, size: f32) -> impl IntoElement {
+pub(super) fn dot(color: Hsla, size: f32) -> impl IntoElement {
     div()
         .flex_none()
         .size(px(size))
@@ -1050,7 +980,7 @@ fn first_line(text: &str) -> String {
         .to_owned()
 }
 
-fn person(id: &str) -> String {
+pub(super) fn person(id: &str) -> String {
     if id == "user" {
         "you".into()
     } else {
@@ -1059,7 +989,7 @@ fn person(id: &str) -> String {
 }
 
 /// "5m ago" style age of an epoch-ms timestamp.
-fn ago(at_ms: i64) -> String {
+pub(super) fn ago(at_ms: i64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)

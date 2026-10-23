@@ -1,3 +1,7 @@
+# Half the machine's 16 threads, so a build leaves room for the apps in use.
+[build]
+jobs = 8
+
 # Statically link the MSVC C runtime so the release exe runs without the VC++ Redistributable.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

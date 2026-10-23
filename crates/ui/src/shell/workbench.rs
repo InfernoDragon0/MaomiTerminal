@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
@@ -22,12 +23,14 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use maomi_workbench::{
-    BoardEvent, BoardWatcher, Column, Plan, PlanStatus, Project, ProjectSettings,
+    BoardClient, BoardEvent, BoardWatcher, Column, HandoffInfo, McpError, Plan, PlanStatus,
+    Project, ProjectSettings,
 };
 
 use super::board::{aurora_ring, avatars, bar, size_tag};
 use super::drawer::DragPreview;
 use super::snippets::{header, icon_button};
+use super::wlo;
 use crate::{Palette, Theme};
 
 /// A plan and the file it was read from (the file path is its identity in the UI).
@@ -35,6 +38,8 @@ use crate::{Palette, Theme};
 pub(crate) struct PlanEntry {
     pub path: PathBuf,
     pub plan: Arc<Plan>,
+    /// "Where we left off": the newest handoff and the board activity after it.
+    pub handoff: Arc<HandoffInfo>,
 }
 
 /// One board folder's plans (newest first) and card types.
@@ -53,6 +58,8 @@ pub(crate) struct WorkbenchStore {
     boards: HashMap<PathBuf, Board>,
     loading: HashSet<PathBuf>,
     started: bool,
+    /// Our own board server for edits; started on the first edit.
+    client: Option<Arc<BoardClient>>,
 }
 
 impl Global for WorkbenchStore {}
@@ -115,6 +122,7 @@ pub(crate) fn load_board(dir: PathBuf, cx: &mut App) {
             let plans = maomi_workbench::read_plans(&dir)
                 .into_iter()
                 .map(|(path, plan)| PlanEntry {
+                    handoff: Arc::new(maomi_workbench::read_handoff(&path)),
                     path,
                     plan: Arc::new(plan),
                 })
@@ -132,6 +140,109 @@ pub(crate) fn load_board(dir: PathBuf, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// An edit the person makes from MaomiTerminal. It goes to the board server as actor "user".
+#[derive(Debug, Clone)]
+pub(crate) enum CardEdit {
+    Move {
+        column: Column,
+        index: Option<usize>,
+    },
+    Task {
+        id: String,
+        done: bool,
+        approval: bool,
+    },
+    Review {
+        approve: bool,
+        feedback: Option<String>,
+    },
+}
+
+/// Sends `edit` for `card` of the plan at `plan_path`.
+pub(crate) fn edit_card(
+    plan_path: &Path,
+    card: &str,
+    edit: CardEdit,
+    cx: &mut App,
+) -> gpui_kit::Task<Result<(), String>> {
+    let card = card.to_owned();
+    write_plan(
+        plan_path,
+        cx,
+        move |client, project, plan, rev| match edit {
+            CardEdit::Move { column, index } => {
+                client.move_card(project, plan, &card, &column, index, rev)
+            }
+            CardEdit::Task { id, done, approval } => {
+                client.set_task_done(project, plan, &card, &id, done, approval, rev)
+            }
+            CardEdit::Review { approve, feedback } => {
+                client.review(project, plan, &card, approve, feedback.as_deref())
+            }
+        },
+    )
+}
+
+/// Answers an open question of the plan's handoff, as the user.
+pub(crate) fn answer_question(
+    plan_path: &Path,
+    handoff: &str,
+    question: &str,
+    text: &str,
+    cx: &mut App,
+) -> gpui_kit::Task<Result<(), String>> {
+    let (handoff, question, text) = (handoff.to_owned(), question.to_owned(), text.to_owned());
+    write_plan(plan_path, cx, move |client, project, plan, _| {
+        client.answer_question(project, plan, &handoff, &question, &text)
+    })
+}
+
+/// Runs one write against the plan at `plan_path` on a background thread. Resolves to a message
+/// the user can read on failure; on success the watcher brings the change in.
+fn write_plan(
+    plan_path: &Path,
+    cx: &mut App,
+    write: impl FnOnce(&BoardClient, &str, &str, i64) -> Result<String, McpError> + Send + 'static,
+) -> gpui_kit::Task<Result<(), String>> {
+    let Some((_, entry)) = cx.global::<WorkbenchStore>().plan(plan_path) else {
+        return gpui_kit::Task::ready(Err("This plan is not loaded yet.".into()));
+    };
+    // base_rev = the rev on screen, so an edit made after a Claude session changed the plan is
+    // refused instead of applied to cards the person has not seen.
+    let (project, plan, rev) = (
+        entry.plan.project_key.clone(),
+        entry.plan.id.clone(),
+        entry.plan.rev,
+    );
+    let client = board_client(cx);
+    cx.background_executor().spawn(async move {
+        let Some(client) = client else {
+            return Err(
+                "No home folder, so the Maomi Workbench board server cannot be found.".into(),
+            );
+        };
+        write(&client, &project, &plan, rev)
+            .map(|_| ())
+            .map_err(|err| match err {
+                McpError::Conflict(_) => {
+                    "The board changed since you opened it. It refreshes in a moment; try again."
+                        .to_owned()
+                }
+                other => other.to_string(),
+            })
+    })
+}
+
+/// The shared board server client, made on first use (the child process starts lazily too).
+fn board_client(cx: &mut App) -> Option<Arc<BoardClient>> {
+    let store = cx.global_mut::<WorkbenchStore>();
+    if store.client.is_none() {
+        store.client =
+            BoardClient::default_script().map(|script| Arc::new(BoardClient::new(script)));
+    }
+    store.client.clone()
 }
 
 fn on_board_event(event: BoardEvent, cx: &mut App) {
@@ -173,19 +284,48 @@ fn on_board_event(event: BoardEvent, cx: &mut App) {
             })
             .detach();
         }
-        // Plans of boards nobody has opened are read when they are; activity is not shown yet.
+        // end_session writes the handoff into `<planId>.d` (not watched) and logs a line, so the
+        // activity log is the signal to re-read it.
+        BoardEvent::ActivityAppended { board_dir, plan_id } if loaded(&board_dir, cx) => {
+            reload_handoff(board_dir.join(format!("{plan_id}.json")), cx)
+        }
+        // Plans of boards nobody has opened are read when they are.
         _ => {}
     }
+}
+
+pub(crate) fn reload_handoff(path: PathBuf, cx: &mut App) {
+    let read = cx.background_executor().spawn({
+        let path = path.clone();
+        async move { maomi_workbench::read_handoff(&path) }
+    });
+    cx.spawn(async move |cx| {
+        let info = Arc::new(read.await);
+        cx.update(|cx| {
+            let store = cx.global_mut::<WorkbenchStore>();
+            let entry = path
+                .parent()
+                .and_then(|dir| store.boards.get_mut(dir))
+                .and_then(|board| board.plans.iter_mut().find(|e| e.path == path));
+            if let Some(entry) = entry {
+                entry.handoff = info;
+            }
+        });
+    })
+    .detach();
 }
 
 fn reload_plan(path: PathBuf, cx: &mut App) {
     let read = cx.background_executor().spawn({
         let path = path.clone();
-        async move { maomi_workbench::read_plan(&path) }
+        async move {
+            maomi_workbench::read_plan(&path)
+                .map(|plan| (plan, maomi_workbench::read_handoff(&path)))
+        }
     });
     cx.spawn(async move |cx| {
-        let plan = match read.await {
-            Ok(plan) => Arc::new(plan),
+        let (plan, handoff) = match read.await {
+            Ok((plan, handoff)) => (Arc::new(plan), Arc::new(handoff)),
             Err(err) => {
                 tracing::warn!("cannot reload plan: {err}");
                 return;
@@ -200,10 +340,14 @@ fn reload_plan(path: PathBuf, cx: &mut App) {
                 return;
             };
             match board.plans.iter_mut().find(|e| e.path == path) {
-                Some(entry) => entry.plan = plan,
+                Some(entry) => {
+                    entry.plan = plan;
+                    entry.handoff = handoff;
+                }
                 None => board.plans.push(PlanEntry {
                     path: path.clone(),
                     plan,
+                    handoff,
                 }),
             }
             board.plans.sort_by(|a, b| {
@@ -278,6 +422,8 @@ pub struct DraggedCard {
 pub enum WorkbenchEvent {
     /// Show this plan's board in the centre.
     OpenBoard(PathBuf),
+    /// Show the plan's whole "where we left off" in the drawer.
+    OpenHandoff(PathBuf),
     OpenCard {
         plan: PathBuf,
         card: String,
@@ -297,6 +443,8 @@ pub struct WorkbenchPanel {
     open: HashSet<String>,
     selected_plan: Option<PathBuf>,
     show_archived: bool,
+    /// The plan whose "where we left off" peek is open under its row.
+    peek: Option<PathBuf>,
     /// The focused terminal's folder. Its project is shown when it has a board.
     cwd: Option<PathBuf>,
     /// Board view: the selected plan as stacked columns instead of the tree.
@@ -367,6 +515,7 @@ impl WorkbenchPanel {
             open: HashSet::new(),
             selected_plan: None,
             show_archived: false,
+            peek: None,
             cwd,
             mini: false,
             plan_select,
@@ -538,6 +687,9 @@ impl WorkbenchPanel {
             let key = entry.path.to_string_lossy().into_owned();
             let open = !query.is_empty() || self.open.contains(&key);
             rows.push(self.plan_row(i, entry, open, key, p, cx));
+            if self.peek.as_ref() == Some(&entry.path) {
+                rows.push(self.render_peek(entry, p, cx));
+            }
             if !open {
                 continue;
             }
@@ -748,6 +900,99 @@ impl WorkbenchPanel {
             .into_any_element()
     }
 
+    /// The plan's "where we left off" flag: aurora ring, amber dot for open questions; a click
+    /// opens the peek under the row.
+    fn flag(
+        &self,
+        index: usize,
+        entry: &PlanEntry,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let path = entry.path.clone();
+        let open = self.peek.as_ref() == Some(&entry.path);
+        let questions = wlo::open_questions(&entry.handoff) > 0;
+        let (hover, emph) = (p.surface_3.to_hsla(), p.fg_emph.to_hsla());
+        let face = div()
+            .id(SharedString::from(format!("wb-flag-{index}")))
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(20.))
+            .rounded(px(6.))
+            .bg(if open { p.surface_3 } else { p.surface_2 }.to_hsla())
+            .text_color(if open { emph } else { p.muted.to_hsla() })
+            .hover(move |s| s.bg(hover).text_color(emph))
+            .tooltip(|window, cx| Tooltip::new("Where we left off").build(window, cx))
+            .on_click(cx.listener(move |panel, _, _, cx| {
+                cx.stop_propagation();
+                panel.peek = if panel.peek.as_ref() == Some(&path) {
+                    None
+                } else {
+                    Some(path.clone())
+                };
+                cx.notify();
+            }))
+            .child(Icon::new(AssetIcon::Flag).size(px(12.)))
+            .when(questions, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top(px(-2.))
+                        .right(px(-2.))
+                        .size(px(7.))
+                        .rounded(px(4.))
+                        .bg(p.warn.to_hsla()),
+                )
+            });
+        aurora_ring(face, 6., p)
+    }
+
+    /// The peek under a plan row: the handoff summary with Copy prompt and Open handoff.
+    fn render_peek(&self, entry: &PlanEntry, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let plan = entry.plan.clone();
+        let path = entry.path.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .mx(px(4.))
+            .my(px(4.))
+            .p(px(10.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(p.line_strong.to_hsla())
+            .bg(p.surface_2.to_hsla())
+            .children(wlo::summary(&entry.handoff, p))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(6.))
+                    .pt(px(2.))
+                    .child(
+                        Button::new("wb-peek-copy")
+                            .primary()
+                            .xsmall()
+                            .label("Copy prompt")
+                            .on_click(move |_, window, cx| {
+                                wlo::copy_continue_prompt(&plan, window, cx)
+                            }),
+                    )
+                    .child(
+                        Button::new("wb-peek-open")
+                            .xsmall()
+                            .label("Open handoff")
+                            .on_click(cx.listener(move |panel, _, _, cx| {
+                                panel.peek = None;
+                                cx.emit(WorkbenchEvent::OpenHandoff(path.clone()));
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn plan_row(
         &self,
         index: usize,
@@ -822,6 +1067,8 @@ impl WorkbenchPanel {
                         cx.notify();
                     })),
             )
+            // Last, so the flags line up down the tree.
+            .child(self.flag(index, entry, p, cx))
             .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
             .on_click(cx.listener(move |panel, _, window, cx| {
                 panel.selected_plan = Some(path.clone());

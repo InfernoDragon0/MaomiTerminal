@@ -2,6 +2,7 @@
 
 mod agent;
 mod board;
+mod card_drawer;
 mod drawer;
 mod hosts;
 mod pane;
@@ -13,6 +14,7 @@ mod ssh_keys;
 mod standalone;
 mod title_strip;
 mod tree;
+mod wlo;
 mod workbench;
 mod workspace;
 

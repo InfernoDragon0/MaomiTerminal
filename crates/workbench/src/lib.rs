@@ -1,9 +1,10 @@
-//! Read-only access to the Maomi Workbench plan board. Has no GPUI dependency.
+//! Access to the Maomi Workbench plan board. Has no GPUI dependency.
 //!
 //! Workbench keeps one JSON file per plan (plus an activity log and per-project settings) in a board
 //! folder. This crate finds those folders ([`projects`]), lists and parses the plans in them and
-//! computes progress the way the Workbench does. It never writes: the Workbench and its MCP server
-//! own the files, and write them atomically, so a read always sees a whole file.
+//! computes progress the way the Workbench does. It never writes board files itself: the Workbench
+//! and its MCP server own them and write them atomically, so a read always sees a whole file.
+//! Changes go through [`BoardClient`], which asks that MCP server to make them.
 //!
 //! The format grows over time, so every field that may be missing is optional, unknown fields are
 //! ignored and unknown enum values are kept as `Other` instead of failing the parse.
@@ -12,12 +13,22 @@ use std::io;
 use std::path::PathBuf;
 
 mod deeplink;
+mod handoff;
+mod mcp;
 mod plan;
 mod prompt;
 mod store;
 mod watch;
 
 pub use deeplink::{DESKTOP_LINK_SCHEME, DeepLink, is_desktop_link, parse_desktop_link};
+pub use handoff::{
+    HANDOFF_TAGS, Handoff, HandoffAnswer, HandoffInfo, HandoffQuestion, continue_prompt,
+    handoffs_path, parse_handoff_item, read_handoff, tag_counts,
+};
+pub use mcp::{
+    BoardClient, McpError, ToolCall, answer_question_call, move_card_call, review_call,
+    set_task_done_call,
+};
 pub use plan::{
     Activity, Agent, Card, CardType, Column, Note, Plan, PlanStatus, ProjectSettings, ReviewPolicy,
     ReviewRequest, Size, Task,

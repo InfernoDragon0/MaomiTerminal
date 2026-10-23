@@ -21,7 +21,8 @@ use maomi_config::{PaneLayout, ShellLayout, TabLayout, WindowLayout};
 use maomi_term::{PtySession, SessionOptions, Shell, available_shells, default_shell};
 
 use super::agent;
-use super::board::{BoardPage, BoardPageEvent, CardDrawer, CloseDrawer};
+use super::board::{BoardPage, BoardPageEvent};
+use super::card_drawer::{CardDrawer, CloseDrawer};
 use super::drawer::DragPreview;
 use super::hosts::{self, HostsEvent, HostsPanel};
 use super::pane::{Pane, PaneEvent, display_path};
@@ -98,7 +99,7 @@ impl Workspace {
             workbench_panel: None,
             show_board: false,
             board_page: None,
-            card_drawer: cx.new(CardDrawer::new),
+            card_drawer: cx.new(|cx| CardDrawer::new(window, cx)),
             launch,
             next_id: 0,
             close_confirmed: false,
@@ -574,6 +575,13 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The plan's "where we left off" in the floating drawer.
+    fn show_handoff(&mut self, plan: PathBuf, cx: &mut Context<Self>) {
+        self.set_board_card(None, cx);
+        self.card_drawer
+            .update(cx, |drawer, cx| drawer.show_handoff(plan, cx));
+    }
+
     fn on_workbench_event(
         &mut self,
         event: &WorkbenchEvent,
@@ -582,6 +590,7 @@ impl Workspace {
     ) {
         match event {
             WorkbenchEvent::OpenBoard(plan) => self.open_board(plan.clone(), window, cx),
+            WorkbenchEvent::OpenHandoff(plan) => self.show_handoff(plan.clone(), cx),
             WorkbenchEvent::OpenCard { plan, card } => {
                 let (plan, card) = (plan.clone(), card.clone());
                 self.set_board_card(Some(card.clone()), cx);
@@ -600,7 +609,7 @@ impl Workspace {
         match &self.board_page {
             Some(page) => page.update(cx, |page, cx| page.set_plan(plan, cx)),
             None => {
-                let page = cx.new(|cx| BoardPage::new(plan, cx));
+                let page = cx.new(|cx| BoardPage::new(plan, window, cx));
                 let events = cx.subscribe_in(&page, window, |ws, page, event, _, cx| match event {
                     BoardPageEvent::OpenCard(card) => {
                         let plan = page.read(cx).plan().to_owned();
@@ -608,6 +617,10 @@ impl Workspace {
                         ws.set_board_card(Some(card.clone()), cx);
                         ws.card_drawer
                             .update(cx, |drawer, cx| drawer.show(plan, card, cx));
+                    }
+                    BoardPageEvent::OpenHandoff => {
+                        let plan = page.read(cx).plan().to_owned();
+                        ws.show_handoff(plan, cx);
                     }
                     BoardPageEvent::CloseCard => {
                         ws.card_drawer.update(cx, |drawer, cx| drawer.close(cx));
