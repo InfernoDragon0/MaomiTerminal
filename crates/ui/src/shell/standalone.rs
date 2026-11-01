@@ -119,7 +119,9 @@ impl Standalone {
                     | PaneEvent::SplitRight
                     | PaneEvent::SplitDown
                     | PaneEvent::PaneDropped(..)
-                    | PaneEvent::Detach => {}
+                    | PaneEvent::Detach
+                    // A detached pane shows its drawer itself.
+                    | PaneEvent::ShowFiles { .. } => {}
                 },
             ),
             cx.subscribe_in(&slider, window, |this, _, event: &SliderEvent, _, cx| {

@@ -508,6 +508,19 @@ pub(crate) fn confirm(
     cx: &mut App,
     on_ok: impl FnOnce(&mut Window, &mut App) + 'static,
 ) {
+    ask_yes_no(title, sub, ok_label, true, window, cx, on_ok);
+}
+
+/// A yes / no question; `danger` styles OK as destructive.
+pub(crate) fn ask_yes_no(
+    title: impl Into<SharedString>,
+    sub: impl Into<SharedString>,
+    ok_label: &'static str,
+    danger: bool,
+    window: &mut Window,
+    cx: &mut App,
+    on_ok: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
     open(
         PromptDialog {
             title: title.into(),
@@ -516,7 +529,7 @@ pub(crate) fn confirm(
             fields: Vec::new(),
             save: None,
             ok_label: ok_label.into(),
-            danger: true,
+            danger,
             answer: Some(Box::new(move |_, window, cx| on_ok(window, cx))),
         },
         window,

@@ -1,4 +1,4 @@
-//! A window's contents: title bar with tabs, activity rail, sessions dock, split panes and the
+//! A window's contents: title bar with tabs, activity rail, left dock, split panes and the
 //! status bar. Each window has its own workspace and tab set.
 
 use std::collections::{HashMap, HashSet};
@@ -23,7 +23,7 @@ use maomi_term::{PtySession, SessionOptions, Shell, available_shells, default_sh
 use super::agent;
 use super::board::{BoardPage, BoardPageEvent};
 use super::card_drawer::{CardDrawer, CloseDrawer};
-use super::drawer::DragPreview;
+use super::drawer::{self, DragPreview};
 use super::hosts::{self, HostsEvent, HostsPanel};
 use super::pane::{Pane, PaneEvent, display_path};
 use super::settings_page::SettingsPage;
@@ -49,6 +49,8 @@ enum Dock {
     Hosts,
     Snippets,
     Workbench,
+    /// The focused pane's file tree.
+    Files,
 }
 
 pub struct Workspace {
@@ -77,6 +79,9 @@ pub struct Workspace {
     settings_page: Option<Entity<SettingsPage>>,
     /// Tabs (by id) whose section in the Sessions dock is collapsed.
     collapsed: HashSet<u64>,
+    files_width: f32,
+    /// Mouse x and dock width when a drag on the Files dock's edge began.
+    files_resizing: Option<(f32, f32)>,
     _observers: Vec<Subscription>,
 }
 
@@ -107,6 +112,8 @@ impl Workspace {
             show_settings: false,
             settings_page: None,
             collapsed: HashSet::new(),
+            files_width: FILES_WIDTH,
+            files_resizing: None,
             _observers: Vec::new(),
         };
         this._observers = vec![
@@ -349,6 +356,7 @@ impl Workspace {
             if let Some(pane) = weak.upgrade() {
                 ws.pane_focused(&pane, cx);
                 ws.follow_focused_cwd(window, cx);
+                ws.ensure_focused_drawer(window, cx);
             }
         });
         self.pane_subscriptions
@@ -572,7 +580,37 @@ impl Workspace {
         if dock == Dock::Workbench {
             self.follow_focused_cwd(window, cx);
         }
+        if dock == Dock::Files {
+            self.ensure_focused_drawer(window, cx);
+        }
         cx.notify();
+    }
+
+    /// The Files dock shows the focused pane's tree; a pane creates its tree on first use.
+    fn ensure_focused_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.dock_open || self.dock != Dock::Files {
+            return;
+        }
+        if let Some(pane) = self.focused_pane().filter(|p| !p.read(cx).is_detached()) {
+            pane.update(cx, |pane, cx| pane.file_drawer(window, cx));
+        }
+    }
+
+    /// A pane's drawer pill, Ctrl+Shift+B or a folder Ctrl+clicked in its output.
+    fn show_files(
+        &mut self,
+        pane: &Entity<Pane>,
+        toggle: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.focused_pane().as_ref() != Some(pane) {
+            self.focus_pane(pane, window, cx);
+        }
+        let shown = !self.show_settings && self.dock_open && self.dock == Dock::Files;
+        if !(shown && !toggle) {
+            self.show_dock(Dock::Files, window, cx);
+        }
     }
 
     /// The plan's "where we left off" in the floating drawer.
@@ -832,6 +870,7 @@ impl Workspace {
             PaneEvent::Reattach => self.reattach_pane(pane, window, cx),
             PaneEvent::ExitedCleanly => self.close_pane(pane, true, window, cx),
             PaneEvent::OpenDeepLink(url) => self.open_deep_link(url, window, cx),
+            PaneEvent::ShowFiles { toggle } => self.show_files(&pane, *toggle, window, cx),
         }
     }
 
@@ -1447,6 +1486,20 @@ impl Workspace {
                     cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Workbench, window, cx)),
                 ),
             )
+            .child(
+                rail_button(
+                    "rail-files",
+                    Icon::new(IconName::FolderOpen),
+                    if cfg!(target_os = "macos") {
+                        "Files (Cmd+B)"
+                    } else {
+                        "Files (Ctrl+Shift+B)"
+                    },
+                    !self.show_settings && self.dock == Dock::Files,
+                    true,
+                )
+                .on_click(cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Files, window, cx))),
+            )
             .child(div().flex_1())
             .child(
                 rail_button(
@@ -1461,6 +1514,95 @@ impl Workspace {
                     true,
                 )
                 .on_click(cx.listener(|ws, _, window, cx| ws.toggle_settings(window, cx))),
+            )
+    }
+
+    /// The focused pane's file tree with a FILES header and a resize edge on the right.
+    fn render_files_dock(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let pane = self.focused_pane();
+        let detached = pane.as_ref().is_some_and(|p| p.read(cx).is_detached());
+        let drawer = pane
+            .filter(|_| !detached)
+            .and_then(|pane| pane.read(cx).drawer());
+        let accent = p.accent.to_hsla();
+        let note = |text: &'static str| {
+            div()
+                .px(px(14.))
+                .py(px(10.))
+                .text_size(px(12.))
+                .text_color(p.muted.to_hsla())
+                .child(text)
+        };
+        div()
+            .flex()
+            .flex_none()
+            .h_full()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(px(self.files_width))
+                    .h_full()
+                    .overflow_hidden()
+                    .bg(p.surface_2.to_hsla())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_between()
+                            .pl(px(14.))
+                            .pr(px(6.))
+                            .pt(px(10.))
+                            .pb(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                    .text_color(p.muted.to_hsla())
+                                    .child("FILES"),
+                            )
+                            .child(
+                                title_button(
+                                    "files-collapse",
+                                    IconName::PanelLeftClose,
+                                    "Collapse dock",
+                                    p,
+                                )
+                                .size(px(24.))
+                                .on_click(cx.listener(
+                                    |ws, _, _, cx| {
+                                        ws.dock_open = false;
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                    )
+                    .map(|d| match drawer {
+                        Some(drawer) => d.child(div().flex_1().min_h_0().child(drawer)),
+                        None if detached => d.child(note(
+                            "This terminal is in its own window; its files are shown there.",
+                        )),
+                        None => d.child(note("No terminal is open.")),
+                    }),
+            )
+            .child(
+                div()
+                    .id("files-resize")
+                    .flex_none()
+                    .w(px(4.))
+                    .h_full()
+                    .cursor_col_resize()
+                    .border_l_1()
+                    .border_color(p.line.to_hsla())
+                    .hover(move |s| s.bg(accent).opacity(0.5))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|ws, event: &gpui_kit::MouseDownEvent, _, cx| {
+                            ws.files_resizing = Some((event.position.x / px(1.), ws.files_width));
+                            cx.stop_propagation();
+                        }),
+                    ),
             )
     }
 
@@ -1927,6 +2069,24 @@ impl Render for Workspace {
                 };
                 super::open_window(launch, cx);
             }))
+            // Dragging the Files dock's edge: tracked on the whole window so a fast mouse
+            // stays in it.
+            .on_mouse_move(cx.listener(|ws, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                let Some((start_x, start_width)) = ws.files_resizing else {
+                    return;
+                };
+                if event.dragging() {
+                    let width = start_width + (event.position.x / px(1.)) - start_x;
+                    ws.files_width = width.clamp(drawer::MIN_WIDTH, drawer::MAX_WIDTH);
+                    cx.notify();
+                } else {
+                    ws.files_resizing = None;
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|ws, _, _, _| ws.files_resizing = None),
+            )
             .size_full()
             .flex()
             .flex_col()
@@ -1955,6 +2115,7 @@ impl Render for Workspace {
                                 Dock::Workbench if self.workbench_panel.is_some() => {
                                     d.children(self.workbench_panel.clone())
                                 }
+                                Dock::Files => d.child(self.render_files_dock(p, cx)),
                                 _ => d.child(self.render_dock(p, cx)),
                             })
                             .child(
@@ -1976,6 +2137,9 @@ impl Render for Workspace {
             .child(self.render_status_bar(theme, p, cx))
     }
 }
+
+/// Starting width of the Files dock; its edge drags between the drawer's limits.
+const FILES_WIDTH: f32 = 260.;
 
 fn title_button(
     id: &'static str,

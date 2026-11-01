@@ -1,6 +1,7 @@
 //! A pane's file drawer: breadcrumb, filter and a virtual list of one folder (normally the
 //! shell's cwd). Rows drag into the terminal to insert their path; double-click opens a folder
-//! or inserts a file's path. The pane wires the events to the terminal.
+//! or inserts a file's path; Ctrl+click opens a local file in its default app after asking.
+//! The pane wires the events to the terminal; the window's Files dock shows the focused pane's.
 //!
 //! SSH panes get a remote drawer that lists the server over SFTP. Files dropped on it from
 //! the OS or a local drawer upload; remote rows dropped on a local drawer download. Remote
@@ -291,6 +292,24 @@ impl FileDrawer {
         } else {
             cx.emit(DrawerEvent::Insert(entry.path.clone()));
         }
+    }
+
+    /// Ctrl+click on a local file: asks, then opens it in the OS's default app for its type.
+    /// Remote files would need a download first, so they are left to the context menu.
+    fn open_with_system(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
+        if entry.is_dir || matches!(self.source, Source::Remote { .. }) {
+            return;
+        }
+        let path = entry.path.clone();
+        ssh::ask_yes_no(
+            format!("Open {}?", entry.name),
+            "Opens the file in the default app for its type.",
+            "Open",
+            false,
+            window,
+            cx,
+            move |_, cx| cx.open_with_system(&path),
+        );
     }
 
     /// A drawer row or pane dropped here: remote rows download into a local drawer, local
@@ -619,7 +638,9 @@ impl FileDrawer {
                     .when(entry.hidden, |d| d.opacity(0.6))
                     .on_click(cx.listener(
                         move |drawer, event: &gpui_kit::ClickEvent, window, cx| {
-                            if event.click_count() >= 2 {
+                            if open_modifier(&event.modifiers()) {
+                                drawer.open_with_system(&entry, window, cx);
+                            } else if event.click_count() >= 2 {
                                 drawer.open(&entry, window, cx);
                             }
                         },
@@ -1025,6 +1046,15 @@ impl Render for DragPreview {
             .border_1()
             .border_color(p.accent.to_hsla())
             .child(self.name.clone())
+    }
+}
+
+/// Ctrl on Windows/Linux, Cmd on macOS, like links in the terminal.
+fn open_modifier(modifiers: &gpui_kit::Modifiers) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.platform
+    } else {
+        modifiers.control
     }
 }
 

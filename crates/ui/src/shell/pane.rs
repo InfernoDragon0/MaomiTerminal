@@ -1,5 +1,6 @@
 //! One terminal pane: a 28 px header (drawer pill, shell name, running dot, split and close
-//! buttons) over an optional file drawer and a [`TerminalView`], wrapped in the focus ring.
+//! buttons) over a [`TerminalView`], wrapped in the focus ring. Its file drawer shows in the
+//! window's Files dock, or beside the terminal in a detached window.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -51,6 +52,10 @@ pub enum PaneEvent {
     ExitedCleanly,
     /// A `maomi:` link in the output was Ctrl+clicked.
     OpenDeepLink(String),
+    /// Show this pane's file tree in the window's Files dock; `toggle` hides a shown dock.
+    ShowFiles {
+        toggle: bool,
+    },
 }
 
 pub struct Pane {
@@ -329,21 +334,46 @@ impl Pane {
         cx.notify();
     }
 
+    /// A pane in its tab uses the window's Files dock; a detached window has no rail, so its
+    /// pane shows the drawer beside the terminal.
     pub fn toggle_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_drawer(window, cx);
-        self.drawer_open = !self.drawer_open;
-        cx.notify();
+        if self.is_detached() {
+            self.drawer_open = !self.drawer_open;
+            cx.notify();
+        } else {
+            cx.emit(PaneEvent::ShowFiles { toggle: true });
+        }
     }
 
     /// Opens the drawer on `dir`, e.g. a folder Ctrl+clicked in the output. The drawer goes
     /// back to the shell's cwd the next time that changes.
     fn show_in_drawer(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_drawer(window, cx);
-        self.drawer_open = true;
         if let Some((drawer, _)) = &self.drawer {
             drawer.update(cx, |d, cx| d.set_dir(dir, cx));
         }
-        cx.notify();
+        if self.is_detached() {
+            self.drawer_open = true;
+            cx.notify();
+        } else {
+            cx.emit(PaneEvent::ShowFiles { toggle: false });
+        }
+    }
+
+    /// The file tree, None until first used.
+    pub fn drawer(&self) -> Option<Entity<FileDrawer>> {
+        self.drawer.as_ref().map(|(drawer, _)| drawer.clone())
+    }
+
+    /// The pane's file tree, created on first use; the Files dock shows the focused pane's.
+    pub fn file_drawer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<FileDrawer>> {
+        self.ensure_drawer(window, cx);
+        self.drawer.as_ref().map(|(drawer, _)| drawer.clone())
     }
 
     fn ensure_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -666,7 +696,7 @@ impl Render for Pane {
             .border_b_1()
             .border_color(p.line.to_hsla())
             .child(
-                drawer_pill(&self.cwd_name(), self.drawer_open, p)
+                drawer_pill(&self.cwd_name(), self.drawer_open && self.is_detached(), p)
                     .on_click(cx.listener(|pane, _, window, cx| pane.toggle_drawer(window, cx))),
             )
             // A long program title gives way to the status and buttons.
@@ -832,7 +862,7 @@ impl Pane {
         let drawer = self
             .drawer
             .as_ref()
-            .filter(|_| self.drawer_open)
+            .filter(|_| self.drawer_open && self.is_detached())
             .map(|(drawer, _)| drawer.clone());
         let accent = p.accent.to_hsla();
         let zones = cx.has_active_drag().then(|| self.render_drop_zones(p, cx));
