@@ -428,6 +428,8 @@ pub enum WorkbenchEvent {
         plan: PathBuf,
         card: String,
     },
+    /// Show the project's Mockup Studio in the centre.
+    OpenMockups(Project),
     Collapse,
 }
 
@@ -554,6 +556,16 @@ impl WorkbenchPanel {
         self.load_project(cx);
         self.sync_plans(window, cx);
         cx.notify();
+    }
+
+    /// The project the dock shows.
+    fn current_project(&self, cx: &App) -> Option<Project> {
+        let key = self.project.as_ref()?;
+        cx.global::<WorkbenchStore>()
+            .projects
+            .iter()
+            .find(|p| &p.key == key)
+            .cloned()
     }
 
     fn board_dir(&self, cx: &App) -> Option<PathBuf> {
@@ -1107,6 +1119,18 @@ impl Render for WorkbenchPanel {
                 p,
                 vec![
                     view_switch(mini, p, cx),
+                    icon_button(
+                        "wb-open-mockups",
+                        Icon::new(IconName::Palette),
+                        "Open the project's mockups in the centre",
+                        p,
+                    )
+                    .on_click(cx.listener(|panel, _, _, cx| {
+                        if let Some(project) = panel.current_project(cx) {
+                            cx.emit(WorkbenchEvent::OpenMockups(project));
+                        }
+                    }))
+                    .into_any_element(),
                     icon_button(
                         "wb-open-board",
                         Icon::new(AssetIcon::SquareKanban),

@@ -4751,9 +4751,13 @@ name = "maomi-workbench"
 version = "0.3.1"
 dependencies = [
  "async-channel",
+ "base64 0.22.1",
  "etcetera",
+ "getrandom 0.3.4",
+ "regex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tracing",
 ]

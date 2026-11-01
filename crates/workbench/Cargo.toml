@@ -13,6 +13,11 @@ etcetera.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 async-channel.workspace = true
+# Mockup previews: inline-script hashes and a nonce for the CSP; system CSS inlining.
+regex = "1"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
 
 [lints]
 workspace = true

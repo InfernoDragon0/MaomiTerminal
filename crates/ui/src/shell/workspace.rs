@@ -25,6 +25,7 @@ use super::board::{BoardPage, BoardPageEvent};
 use super::card_drawer::{CardDrawer, CloseDrawer};
 use super::drawer::{self, DragPreview};
 use super::hosts::{self, HostsEvent, HostsPanel};
+use super::mockups::{MockupsEvent, MockupsPage};
 use super::pane::{Pane, PaneEvent, display_path};
 use super::settings_page::SettingsPage;
 use super::snippets::{self, SnippetsEvent, SnippetsPanel, TabChoice};
@@ -67,6 +68,9 @@ pub struct Workspace {
     /// A Workbench plan's board replaces the panes (not the dock) while shown.
     show_board: bool,
     board_page: Option<Entity<BoardPage>>,
+    /// A project's Mockup Studio replaces the panes while shown, like the board.
+    show_mockups: bool,
+    mockups_page: Option<Entity<MockupsPage>>,
     /// Floats over the centre; shows nothing until a card is opened.
     card_drawer: Entity<CardDrawer>,
     launch: LaunchOptions,
@@ -104,6 +108,8 @@ impl Workspace {
             workbench_panel: None,
             show_board: false,
             board_page: None,
+            show_mockups: false,
+            mockups_page: None,
             card_drawer: cx.new(|cx| CardDrawer::new(window, cx)),
             launch,
             next_id: 0,
@@ -635,6 +641,9 @@ impl Workspace {
                 self.card_drawer
                     .update(cx, |drawer, cx| drawer.show(plan, card, cx));
             }
+            WorkbenchEvent::OpenMockups(project) => {
+                self.open_mockups(project.clone(), None, window, cx)
+            }
             WorkbenchEvent::Collapse => {
                 self.dock_open = false;
                 cx.notify();
@@ -673,6 +682,37 @@ impl Workspace {
             self.set_board_card(Some(open), cx);
         }
         self.show_board = true;
+        self.show_mockups = false;
+        cx.notify();
+    }
+
+    /// Shows a project's mockups in the centre, optionally with one page picked.
+    fn open_mockups(
+        &mut self,
+        project: maomi_workbench::Project,
+        select: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match &self.mockups_page {
+            Some(page) => page.update(cx, |page, cx| page.set_project(project, select, cx)),
+            None => {
+                let page = cx.new(|cx| MockupsPage::new(project, select, cx));
+                let events = cx.subscribe_in(&page, window, |ws, _, event, _, cx| match event {
+                    MockupsEvent::OpenCard { plan, card } => {
+                        ws.set_board_card(None, cx);
+                        let (plan, card) = (plan.clone(), card.clone());
+                        ws.card_drawer
+                            .update(cx, |drawer, cx| drawer.show(plan, card, cx));
+                    }
+                });
+                self._observers.push(events);
+                self.mockups_page = Some(page);
+            }
+        }
+        self.show_settings = false;
+        self.show_board = false;
+        self.show_mockups = true;
         cx.notify();
     }
 
@@ -689,22 +729,24 @@ impl Workspace {
         panel.update(cx, |panel, cx| panel.follow_dir(dir, window, cx));
     }
 
-    /// A Ctrl+clicked `maomi:` link. Board links open here; other valid links go to the OS (the
-    /// Workbench desktop app), and so does a plan this app cannot find. An invalid link does
+    /// A Ctrl+clicked `maomi:` link. Board and mockup links open here; a plan or project this app
+    /// cannot find goes to the OS (the Workbench desktop app). An invalid link does
     /// nothing: links are untrusted input.
     fn open_deep_link(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(link) = maomi_workbench::parse_desktop_link(url) else {
             tracing::warn!("ignored an invalid maomi link");
             return;
         };
-        let DeepLink::Plan {
-            project,
-            plan,
-            card,
-        } = link
-        else {
-            cx.open_url(url);
-            return;
+        let (project, plan, card) = match link {
+            DeepLink::Plan {
+                project,
+                plan,
+                card,
+            } => (project, plan, card),
+            DeepLink::Mockup { project, id } => {
+                self.open_mockup_link(url.to_owned(), project, id, window, cx);
+                return;
+            }
         };
         let url = url.to_owned();
         let find = cx.background_executor().spawn(async move {
@@ -718,6 +760,32 @@ impl Workspace {
             let found = find.await;
             ws.update_in(cx, |ws, window, cx| match found {
                 Some(path) => ws.show_plan(path, card, window, cx),
+                None => cx.open_url(&url),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A mockup link opens the project's Mockup Studio on that page; an unknown project goes to
+    /// the OS (the Workbench desktop app).
+    fn open_mockup_link(
+        &mut self,
+        url: String,
+        project: String,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let find = cx.background_executor().spawn(async move {
+            maomi_workbench::projects()
+                .into_iter()
+                .find(|found| found.key == project && found.path.is_some())
+        });
+        cx.spawn_in(window, async move |ws, cx| {
+            let found = find.await;
+            ws.update_in(cx, |ws, window, cx| match found {
+                Some(project) => ws.open_mockups(project, Some(id), window, cx),
                 None => cx.open_url(&url),
             })
             .ok();
@@ -822,6 +890,7 @@ impl Workspace {
     fn focus_pane(&mut self, pane: &Entity<Pane>, window: &mut Window, cx: &mut Context<Self>) {
         self.show_settings = false;
         self.show_board = false;
+        self.show_mockups = false;
         if let Some(tab) = self.tab_of(pane) {
             self.active = tab;
             self.tabs[tab].focused = pane.clone();
@@ -1137,7 +1206,7 @@ impl Workspace {
     ) -> impl IntoElement {
         let tabs = self.tabs.iter().enumerate().map(|(i, tab)| {
             // Like Settings, a board in the centre leaves no tab active.
-            let on = i == self.active && !self.show_board;
+            let on = i == self.active && !self.show_board && !self.show_mockups;
             let title: SharedString = tab.focused.read(cx).title().into();
             let id = tab.id;
             let (hover_bg, emph, x_hover) = (
@@ -2124,8 +2193,11 @@ impl Render for Workspace {
                                     .flex_1()
                                     .min_w_0()
                                     .min_h_0()
-                                    .map(|d| match &self.board_page {
-                                        Some(page) if self.show_board => d.child(page.clone()),
+                                    .map(|d| match (&self.board_page, &self.mockups_page) {
+                                        (Some(page), _) if self.show_board => d.child(page.clone()),
+                                        (_, Some(page)) if self.show_mockups => {
+                                            d.child(page.clone())
+                                        }
                                         _ => d.p(px(6.)).children(centre),
                                     })
                                     .when(self.card_drawer.read(cx).is_open(), |d| {

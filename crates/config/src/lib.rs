@@ -295,6 +295,11 @@ pub fn agent_status_dir() -> Result<PathBuf, ConfigError> {
     Ok(strategy()?.cache_dir().join("agent-status"))
 }
 
+/// Mockup previews are written here before the browser opens them.
+pub fn mockup_preview_dir() -> Result<PathBuf, ConfigError> {
+    Ok(strategy()?.cache_dir().join("mockup-preview"))
+}
+
 /// Panics are written here: release builds have no console to print them to.
 pub fn crash_log_path() -> Result<PathBuf, ConfigError> {
     Ok(strategy()?.cache_dir().join("crash.log"))

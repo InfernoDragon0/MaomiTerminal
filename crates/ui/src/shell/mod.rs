@@ -5,6 +5,7 @@ mod board;
 mod card_drawer;
 mod drawer;
 mod hosts;
+mod mockups;
 mod pane;
 mod process;
 mod settings_page;

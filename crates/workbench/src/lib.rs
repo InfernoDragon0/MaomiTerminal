@@ -15,6 +15,7 @@ use std::path::PathBuf;
 mod deeplink;
 mod handoff;
 mod mcp;
+mod mockups;
 mod plan;
 mod prompt;
 mod store;
@@ -28,6 +29,10 @@ pub use handoff::{
 pub use mcp::{
     BoardClient, McpError, ToolCall, answer_question_call, move_card_call, review_call,
     set_task_done_call,
+};
+pub use mockups::{
+    MockupIndex, MockupPage, MockupPlanLink, MockupStatus, MockupSystem, MockupTarget,
+    MockupVersion, is_mockup_id, mockups_dir, preview_html, read_mockups,
 };
 pub use plan::{
     Activity, Agent, Card, CardType, Column, Note, Plan, PlanStatus, ProjectSettings, ReviewPolicy,
