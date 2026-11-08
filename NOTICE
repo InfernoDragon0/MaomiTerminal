@@ -3,3 +3,6 @@ Copyright 2026 the MaomiTerminal authors
 
 This product includes icons from Lucide (https://lucide.dev), ISC License,
 Copyright (c) Cole Bemis 2013-2022 as part of Feather (MIT) and Lucide Contributors 2022.
+
+The Windows build includes conpty.dll and OpenConsole.exe from Microsoft.Windows.Console.ConPTY
+(https://github.com/microsoft/terminal), MIT License, Copyright (c) Microsoft Corporation.

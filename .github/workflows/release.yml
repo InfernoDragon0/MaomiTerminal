@@ -87,6 +87,11 @@ jobs:
           cargo build --release --locked -p maomi-app
           mkdir publish
           cp "target/release/${{ matrix.exe }}" publish/
+      - name: Bundle ConPTY (Windows)
+        # Newer ConPTY next to the exe: the inbox one garbles joined emoji (packaging/fetch-conpty.ps1).
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/fetch-conpty.ps1 -Dest publish
       - name: Build (macOS universal)
         if: runner.os == 'macOS'
         run: |

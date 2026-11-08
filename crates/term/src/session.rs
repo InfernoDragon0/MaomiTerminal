@@ -22,6 +22,7 @@ use alacritty_terminal::term::{Config as TermConfig, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor, Rgb, StdSyncHandler};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+use crate::grapheme::{GraphemeTerm, Graphemes};
 use crate::integration;
 use crate::osc::{OscScanner, PromptMark, ShellMark};
 use crate::shell::{Shell, ShellKind, default_shell};
@@ -880,8 +881,10 @@ fn read_loop(
 ) {
     let mut buf = vec![0u8; READ_BUFFER];
     let mut parser: Processor<StdSyncHandler> = Processor::new();
+    let mut graphemes = Graphemes::default();
     let mut scanner = OscScanner::default();
     let mut marks = Vec::new();
+    let mut record = recorder();
     loop {
         let n = match reader.read(&mut buf) {
             Ok(0) => break,
@@ -891,8 +894,14 @@ fn read_loop(
             Err(_) => break,
         };
         let bytes = &buf[..n];
+        if let Some(file) = &mut record {
+            let _ = file.write_all(bytes);
+        }
         scanner.feed(bytes, &mut marks);
-        parser.advance(&mut *term.lock(), bytes);
+        parser.advance(
+            &mut GraphemeTerm::new(&mut term.lock(), &mut graphemes),
+            bytes,
+        );
         for mark in marks.drain(..) {
             shared.apply_mark(mark);
         }
@@ -900,8 +909,24 @@ fn read_loop(
     }
     // Flush a synchronized update (DEC 2026) the program never ended.
     if parser.sync_timeout().sync_timeout().is_some() {
-        parser.stop_sync(&mut *term.lock());
+        parser.stop_sync(&mut GraphemeTerm::new(&mut term.lock(), &mut graphemes));
     }
+}
+
+/// Dev aid: with `MAOMI_RECORD=<dir>`, every session's raw PTY output goes to
+/// `<dir>/pty-<ms since epoch>-<thread>.bin`, for replaying rendering glitches in tests.
+fn recorder() -> Option<std::fs::File> {
+    let dir = PathBuf::from(std::env::var_os("MAOMI_RECORD")?);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let thread = format!("{:?}", std::thread::current().id());
+    let name = format!(
+        "pty-{ms}-{}.bin",
+        thread.trim_start_matches("ThreadId(").trim_end_matches(')')
+    );
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::File::create(dir.join(name)).ok()
 }
 
 fn home_dir() -> Option<PathBuf> {

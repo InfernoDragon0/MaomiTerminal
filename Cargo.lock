@@ -4707,6 +4707,7 @@ dependencies = [
  "sysinfo",
  "thiserror 2.0.21",
  "tracing",
+ "unicode-width",
  "which",
  "windows-sys 0.61.2",
 ]

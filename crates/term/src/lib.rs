@@ -1,5 +1,6 @@
 //! Terminal backend: PTY sessions and terminal emulation. Has no GPUI dependency.
 
+pub mod grapheme;
 mod integration;
 mod osc;
 mod priority;
