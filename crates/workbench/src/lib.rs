@@ -12,6 +12,7 @@
 use std::io;
 use std::path::PathBuf;
 
+mod commit_suggestion;
 mod deeplink;
 mod handoff;
 mod mcp;
@@ -21,10 +22,14 @@ mod prompt;
 mod store;
 mod watch;
 
+pub use commit_suggestion::{
+    COMMIT_BODY_BULLETS, COMMIT_TITLE_MAX, CommitSuggestion, SESSION_TRAILER, SuggestionCard,
+    build_commit_suggestion, latest_session_suggestion, read_session_suggestion,
+};
 pub use deeplink::{DESKTOP_LINK_SCHEME, DeepLink, is_desktop_link, parse_desktop_link};
 pub use handoff::{
     HANDOFF_TAGS, Handoff, HandoffAnswer, HandoffInfo, HandoffQuestion, continue_prompt,
-    handoffs_path, parse_handoff_item, read_handoff, tag_counts,
+    handoffs_path, newest_handoff, parse_handoff_item, read_handoff, tag_counts,
 };
 pub use mcp::{
     BoardClient, McpError, ToolCall, answer_question_call, move_card_call, review_call,

@@ -9,6 +9,9 @@ mod color;
 mod component;
 mod fonts;
 mod palette;
+// Unused until the Repo dock and Repo tab use it; drop the allow then.
+#[allow(dead_code, unused_imports)]
+mod repo;
 pub mod settings;
 pub mod shell;
 mod terminal;

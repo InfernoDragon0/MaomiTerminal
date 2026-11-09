@@ -73,16 +73,7 @@ pub fn handoffs_path(plan_path: &Path) -> PathBuf {
 /// The plan's newest handoff (by time) and the activity after it. A missing or unreadable file
 /// reads as no handoff.
 pub fn read_handoff(plan_path: &Path) -> HandoffInfo {
-    let path = handoffs_path(plan_path);
-    let handoff = std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| {
-            let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-            serde_json::from_slice::<HandoffsFile>(bytes)
-                .map_err(|err| tracing::warn!("cannot read {}: {err}", path.display()))
-                .ok()
-        })
-        .and_then(|file| file.handoffs.into_iter().max_by_key(|h| h.at));
+    let handoff = newest_handoff(plan_path);
     let newer_activity = handoff.as_ref().map_or(0, |h| {
         read_activity(&activity_path(plan_path), usize::MAX)
             .iter()
@@ -93,6 +84,21 @@ pub fn read_handoff(plan_path: &Path) -> HandoffInfo {
         handoff,
         newer_activity,
     }
+}
+
+/// The plan's newest handoff by time; `None` when the file is missing or unreadable. The
+/// project-wide handoffs use `<board>/_project.json` as `plan_path`.
+pub fn newest_handoff(plan_path: &Path) -> Option<Handoff> {
+    let path = handoffs_path(plan_path);
+    std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| {
+            let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+            serde_json::from_slice::<HandoffsFile>(bytes)
+                .map_err(|err| tracing::warn!("cannot read {}: {err}", path.display()))
+                .ok()
+        })
+        .and_then(|file| file.handoffs.into_iter().max_by_key(|h| h.at))
 }
 
 /// Bullet tags agents start handoff items with, in display order.

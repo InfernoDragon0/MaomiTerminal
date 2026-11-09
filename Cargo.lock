@@ -4748,8 +4748,10 @@ version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-channel",
+ "bstr",
  "gpui-kit",
  "maomi-config",
+ "maomi-git",
  "maomi-ssh",
  "maomi-term",
  "maomi-vault",

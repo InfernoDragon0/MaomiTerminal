@@ -10,8 +10,9 @@ use crate::parse::status::{self, Status};
 use crate::repo::{DiffTarget, GitRepo, LogQuery};
 use crate::runner::{GitCommand, GitRunner, GitStream};
 
-/// Commits per batch from [`CliRepo::log_stream`] (design: stream `git log` in chunks of 500).
-pub const LOG_BATCH: usize = 500;
+/// Commits per batch from [`CliRepo::log_stream`]: one page of the Repo views' commit list,
+/// loaded as the user scrolls.
+pub const LOG_BATCH: usize = 200;
 
 /// Bytes of `git diff` output the file-diff views read before asking the user (see
 /// [`Capped`]). Syntax colouring has its own, lower limits in the `ui` crate.

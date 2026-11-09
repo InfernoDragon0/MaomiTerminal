@@ -13,6 +13,9 @@ maomi-config.workspace = true
 maomi-vault.workspace = true
 maomi-ssh.workspace = true
 maomi-workbench.workspace = true
+maomi-git.workspace = true
+# Git paths are raw bytes (maomi-git's status and ops take BString).
+bstr = "1.13"
 zeroize = "1"
 async-channel.workspace = true
 anyhow.workspace = true
