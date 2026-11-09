@@ -1,0 +1,3 @@
+# Raw git output: never convert line endings (CRLF and NUL bytes are part of the fixtures).
+* -text
+*.sh text eol=lf

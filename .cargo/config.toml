@@ -13,3 +13,6 @@ rustflags = ["-C", "target-feature=+crt-static"]
 TMP = { value = ".build-tmp", relative = true, force = true }
 TEMP = { value = ".build-tmp", relative = true, force = true }
 TMPDIR = { value = ".build-tmp", relative = true, force = true }
+# Test repos live in .build-tmp, inside this repo: stop git's repo search there so a test folder
+# that is not a repo is not taken for MaomiTerminal's own.
+GIT_CEILING_DIRECTORIES = { value = ".build-tmp", relative = true, force = true }

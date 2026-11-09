@@ -1,0 +1,6 @@
+-z
+--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%cn%x1f%ce%x1f%cd%x1f%D%x1f%s%x1f%b
+--date=raw
+--decorate=full
+--no-color
+--no-show-signature

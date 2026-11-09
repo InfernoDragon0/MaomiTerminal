@@ -1,0 +1,22 @@
+diff --cc aa.txt
+index b19a1e9,950b81b..0000000
+--- a/aa.txt
++++ b/aa.txt
+@@@ -1,1 -1,1 +1,5 @@@
+++<<<<<<< HEAD
+ +ours
+++=======
++ theirs
+++>>>>>>> other
+diff --cc uu.txt
+index b19a1e9,950b81b..0000000
+--- a/uu.txt
++++ b/uu.txt
+@@@ -1,1 -1,1 +1,5 @@@
+++<<<<<<< HEAD
+ +ours
+++=======
++ theirs
+++>>>>>>> other
+* Unmerged path du.txt
+* Unmerged path ud.txt

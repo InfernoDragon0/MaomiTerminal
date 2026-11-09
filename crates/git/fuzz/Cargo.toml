@@ -1,0 +1,43 @@
+[package]
+name = "maomi-git-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not part of the main workspace: cargo-fuzz needs nightly and its own lockfile.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+maomi-git = { path = ".." }
+
+[[bin]]
+name = "status"
+path = "fuzz_targets/status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "log"
+path = "fuzz_targets/log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff"
+path = "fuzz_targets/diff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "refs"
+path = "fuzz_targets/refs.rs"
+test = false
+doc = false
+bench = false

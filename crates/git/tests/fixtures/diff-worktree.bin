@@ -1,0 +1,69 @@
+diff --git a/binary.bin b/binary.bin
+index 4912885..6b994f2 100644
+Binary files a/binary.bin and b/binary.bin differ
+diff --git a/crlf.txt b/crlf.txt
+index e1587ff..103b2f6 100644
+--- a/crlf.txt
++++ b/crlf.txt
+@@ -1,3 +1,3 @@
+ one
+-two
++TWO
+ three
+diff --git a/gets-noeol.txt b/gets-noeol.txt
+index 9d0103b..8d826f2 100644
+--- a/gets-noeol.txt
++++ b/gets-noeol.txt
+@@ -1 +1,2 @@
+ has newline
++not any more
+\ No newline at end of file
+diff --git a/multi.txt b/multi.txt
+index bab081f..3f32aaa 100644
+--- a/multi.txt
++++ b/multi.txt
+@@ -1,6 +1,6 @@
+ line 1
+ line 2
+-line 3
++line three
+ line 4
+ line 5
+ line 6
+@@ -32,7 +32,7 @@ line 31
+ line 32
+ line 33
+ line 34
+-line 35
++line thirty-five
+ line 36
+ line 37
+ line 38
+diff --git a/name with spaces.txt b/name with spaces.txt
+index f617ea6..b98e3e7 100644
+--- a/name with spaces.txt	
++++ b/name with spaces.txt	
+@@ -3,3 +3,4 @@ spaced 2
+ spaced 3
+ spaced 4
+ spaced 5
++line 6
+diff --git a/noeol.txt b/noeol.txt
+index 20cbb4d..df059b9 100644
+--- a/noeol.txt
++++ b/noeol.txt
+@@ -1 +1,2 @@
+-no newline
+\ No newline at end of file
++no newline
++now two lines
+\ No newline at end of file
+diff --git "a/\303\274n\303\257c\303\266d\303\251.txt" "b/\303\274n\303\257c\303\266d\303\251.txt"
+index 5dda727..7984eb8 100644
+--- "a/\303\274n\303\257c\303\266d\303\251.txt"
++++ "b/\303\274n\303\257c\303\266d\303\251.txt"
+@@ -3,3 +3,4 @@ uni 2
+ uni 3
+ uni 4
+ uni 5
++line 6

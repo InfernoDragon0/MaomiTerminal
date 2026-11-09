@@ -1,0 +1,32 @@
+{
+  "id": "repo-tab",
+  "title": "Repo side tab + main Repo tab",
+  "status": "review",
+  "version": 2,
+  "versions": [
+    {
+      "v": 1,
+      "at": 1794213132152,
+      "bytes": 36095,
+      "by": "1f290810-0af3-47eb-9006-56db569369f4",
+      "note": "v1: rail Repo dock (branch, fetch/pull/push/stash, mini graph + WIP, suggested commit, Conflicts/Staged/Changes with hover stage/unstage/discard, live git strip) + main Repo tab (refs | lane graph | details, file -> diff). Mockup bar: view, clean / not-a-repo states, simulated background fetch."
+    },
+    {
+      "v": 2,
+      "at": 1794213140306,
+      "bytes": 36087,
+      "by": "1f290810-0af3-47eb-9006-56db569369f4",
+      "note": "v2: lint fixes (no page token, no .btn restyle)"
+    }
+  ],
+  "createdAt": 1794213132152,
+  "updatedAt": 1794213147202,
+  "plans": [
+    {
+      "plan": "p-mvxawox0ebh4",
+      "milestone": "m-mvxawox20eqp"
+    }
+  ],
+  "plan": "p-mvxawox0ebh4",
+  "milestone": "m-mvxawox20eqp"
+}

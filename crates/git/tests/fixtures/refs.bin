@@ -1,0 +1,10 @@
+refs/heads/featurefeaturec60e5d185088976b297d08ba2c1813f3cc0fa170 refs/remotes/origin/feature1696777200Feature work
+refs/heads/gone-branchgone-branch69e3577c0636a9f6bfc2b09ad97d895103d9d06b refs/remotes/origin/gone-branchgone1696802400Soon gone
+refs/heads/mainmainbdd6f1205556643d75b0b7b6e7cf878c4cd2e187*refs/remotes/origin/mainahead 2, behind 21696795200
+refs/remotes/origin/HEADoriginde985218d134573b5bdf3a54ed545e1bbf581c2c 1696802400Remote two
+refs/remotes/origin/featureorigin/featurec60e5d185088976b297d08ba2c1813f3cc0fa170 1696777200Feature work
+refs/remotes/origin/mainorigin/mainde985218d134573b5bdf3a54ed545e1bbf581c2c 1696802400Remote two
+refs/remotes/upstream/mainupstream/main31527adb4c5a860f20f8efeb3f0b6ea335dd361a 1696784400Merge branch 'feature'
+refs/stashstashb38c3d0b53baac668440fa731a2f43d5f5233dad 1696809600WIP on main: bdd6f12
+refs/tags/v0.1v0.196a76f0795716be2a0cfd2a6b43129cc29014ce4 1696770000Root commit
+refs/tags/v1.0v1.037eb8d50dd4ad0fa4b81dd309a8890dc3d96ca5c31527adb4c5a860f20f8efeb3f0b6ea335dd361a 1696788000Release 1.0

@@ -1,0 +1,39 @@
+[package]
+name = "maomi-git"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+# Optional read-only fast path (design: "Git backend: CLI first"). Stub until a GixRepo exists.
+gix = []
+
+[dependencies]
+tempfile = "3"
+async-io = "2.6"
+async-process = "2.5"
+bstr = "1.13"
+futures-lite = "2.6"
+memchr = "2.7"
+notify = "8.2"
+notify-debouncer-full = { version = "0.7", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror.workspace = true
+tracing.workspace = true
+zeroize = "1.8"
+
+# Killing a command's whole process tree on cancel: a Job Object (Windows) / process group (Unix);
+# LibraryLoader: dll_search (SetDefaultDllDirectories).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["process", "std"] }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

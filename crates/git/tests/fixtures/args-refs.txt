@@ -1,0 +1,6 @@
+--format=%(refname)%1f%(refname:short)%1f%(objectname)%1f%(*objectname)%1f%(HEAD)%1f%(upstream)%1f%(upstream:track,nobracket)%1f%(creatordate:unix)%1f%(contents:subject)
+--sort=refname
+refs/heads
+refs/remotes
+refs/tags
+refs/stash

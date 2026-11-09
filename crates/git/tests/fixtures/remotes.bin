@@ -1,0 +1,4 @@
+origin	../origin.git (fetch)
+origin	../origin.git (push)
+upstream	../upstream.git (fetch)
+upstream	../upstream-push.git (push)

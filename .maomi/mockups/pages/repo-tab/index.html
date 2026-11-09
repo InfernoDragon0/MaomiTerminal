@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en" data-theme="aurora-dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Repo side tab + Repo tab</title>
+<link rel="stylesheet" href="../../_system/tokens.css">
+<link rel="stylesheet" href="../../_system/components.css">
+<style>
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+button { font: inherit; }
+.hidden { display: none !important; }
+.mono { font-family: "Cascadia Code", Consolas, ui-monospace, monospace; }
+.muted { color: var(--muted); }
+.sp { flex: 1; min-width: 0; }
+svg.i { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+.app { display: grid; grid-template-rows: 38px minmax(0, 1fr) 24px; height: calc(100vh - 40px); min-height: 520px; }
+.titlebar { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 0 0 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.brand { flex: none; display: flex; align-items: center; gap: 7px; margin-right: 8px; font-size: 12px; font-weight: 600; color: var(--fg-emph); }
+.brand i { width: 10px; height: 10px; border-radius: 3px; background: var(--aurora); }
+.tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+.tb-spacer { flex: 1; }
+.win-ctl { display: flex; align-self: stretch; }
+.win-ctl span { display: grid; place-items: center; width: 42px; color: var(--muted); }
+.body { display: flex; min-height: 0; }
+.statusbar { display: flex; align-items: center; gap: 14px; padding: 0 12px; font-size: 11.5px; color: var(--muted); background: var(--surface); border-top: 1px solid var(--line); }
+.statusbar b { font-weight: 500; color: var(--fg); }
+
+/* Repo dock (rail side tab) */
+.dock { display: flex; flex-direction: column; flex: none; width: 300px; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); }
+.dhead { display: grid; gap: 8px; padding: 10px 10px 8px; border-bottom: 1px solid var(--line); }
+.drow { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dtitle { font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); }
+.repo-nm { font-weight: 600; color: var(--fg-emph); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.follow { font-size: 11px; color: var(--muted); }
+.bpick { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.bpick:hover { border-color: var(--line-strong); }
+.bpick .nm { flex: 1; text-align: left; font-weight: 600; color: var(--fg-emph); }
+.ab { font-size: 11.5px; color: var(--muted); }
+.tools { display: flex; align-items: center; gap: 4px; }
+.tools .btn { padding-left: 7px; padding-right: 7px; }
+.nb { margin-left: 3px; font-size: 11px; }
+.tools .busy svg.i { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.dscroll { flex: 1; min-height: 0; overflow: auto; padding: 4px 6px 10px; }
+.fold { margin-top: 6px; }
+.fold > summary { display: flex; align-items: center; gap: 6px; padding: 6px 4px; list-style: none; cursor: pointer; font-size: 11.5px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; color: var(--muted); }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary .chev { transition: transform .12s; }
+.fold:not([open]) > summary .chev { transform: rotate(-90deg); }
+.fold .n { padding: 0 6px; font-size: 11px; border-radius: 9px; background: var(--surface-2); color: var(--fg); letter-spacing: 0; }
+.cm { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 6px; height: 26px; padding: 0 6px 0 2px; border-radius: 7px; cursor: pointer; }
+.cm:hover { background: var(--surface-2); }
+.cm .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm .meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.cm.wip .msg { font-style: italic; color: var(--warn); }
+.cm svg.lane { width: 30px; height: 26px; overflow: visible; }
+.refp { margin-left: 6px; padding: 0 5px; font-size: 10.5px; border-radius: 5px; background: var(--accent-soft); color: var(--fg-emph); }
+.refp.tag { background: var(--surface-3); color: var(--fg); }
+.more { padding: 6px; font-size: 11.5px; color: var(--muted); text-align: center; }
+.sugg { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; font-size: 10.5px; letter-spacing: 0; text-transform: none; color: var(--fg-emph); border-radius: 9px; background: var(--accent-soft); }
+.cbox { display: grid; gap: 6px; padding: 4px 4px 8px; }
+.cbox .row1 { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.cbox textarea.field { resize: vertical; min-height: 54px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+.linkbtn { padding: 0; color: var(--accent); background: none; border: 0; cursor: pointer; font-size: 11px; }
+.split { display: flex; gap: 1px; }
+.split .btn:first-child { flex: 1; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split .btn:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.grp { margin-top: 6px; }
+.gh { display: flex; align-items: center; gap: 6px; padding: 4px; font-size: 11.5px; color: var(--muted); }
+.file { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; align-items: center; gap: 6px; height: 24px; padding: 0 4px; border-radius: 6px; cursor: pointer; }
+.file:hover { background: var(--surface-2); }
+.file .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .dir { color: var(--muted); }
+.file .d { font-size: 11px; color: var(--muted); }
+.st { font: 600 11px/1 "Cascadia Code", Consolas, monospace; text-align: center; }
+.st.a { color: var(--ok); } .st.m { color: var(--warn); } .st.d, .st.c { color: var(--err); } .st.r { color: var(--c2); } .st.u { color: var(--muted); }
+.acts { display: none; gap: 2px; }
+.file:hover .acts, .gh:hover .acts { display: flex; }
+.ib { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; color: var(--muted); background: none; border: 0; border-radius: 5px; cursor: pointer; }
+.ib:hover { color: var(--fg-emph); background: var(--surface-3); }
+.ib.danger:hover { color: var(--err); }
+.clean { display: flex; align-items: center; gap: 6px; padding: 8px 4px; color: var(--muted); }
+.foot { padding: 8px 10px; border-top: 1px solid var(--line); }
+.foot a { color: var(--accent); text-decoration: none; font-size: 12px; }
+.outstrip { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 11.5px; border-top: 1px solid var(--line); background: var(--surface); }
+.empty { display: grid; gap: 8px; place-items: center; padding: 40px 16px; text-align: center; color: var(--muted); }
+.empty h3 { margin: 0; font-size: 13px; color: var(--fg-emph); }
+
+/* Centre */
+.centre { flex: 1; min-width: 0; min-height: 0; padding: 6px; background: var(--bg); display: flex; }
+.centre > .term-pane { flex: 1; }
+.term-body { margin: 0; padding: 8px 10px; }
+
+/* Main Repo tab */
+.rv { flex: 1; min-width: 0; display: grid; grid-template-columns: 200px minmax(0, 1fr) 340px; gap: 6px; min-height: 0; }
+.rv > .card { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.refs { padding: 8px 6px; overflow: auto; }
+.sref { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 6px; color: var(--fg); background: none; border: 0; border-radius: 6px; cursor: pointer; text-align: left; font-size: 12.5px; }
+.sref:hover { background: var(--surface-2); }
+.sref span:first-of-type { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sref .aside { font-size: 11px; color: var(--muted); }
+.sref.indent { padding-left: 26px; }
+.refs .sect-title { margin: 10px 4px 4px; }
+.refs .sect-title:first-child { margin-top: 2px; }
+.gtools { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--line); }
+.gtools .field { max-width: 280px; }
+.ghead, .grow { display: grid; grid-template-columns: 120px minmax(0, 1fr) 120px 70px 70px; align-items: center; gap: 8px; padding: 0 10px; }
+.ghead { height: 26px; font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
+.gbody { position: relative; flex: 1; overflow: auto; }
+.grow { height: 28px; cursor: pointer; }
+.grow:hover { background: var(--surface-2); }
+.grow.wip .msg { font-style: italic; color: var(--warn); }
+.grow .msg { display: flex; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; }
+.grow .msg span.t { overflow: hidden; text-overflow: ellipsis; }
+.grow .au, .grow .dt, .grow .sha { font-size: 11.5px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+svg.graph { position: absolute; left: 10px; top: 0; pointer-events: none; overflow: visible; }
+.diffv { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.dvh { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--line); }
+.dvb { flex: 1; overflow: auto; margin: 0; padding: 6px 0; font: 12px/1.6 "Cascadia Code", Consolas, monospace; }
+.dl { display: grid; grid-template-columns: 44px 44px minmax(0, 1fr); padding-right: 10px; white-space: pre; }
+.dl .ln { padding-right: 8px; text-align: right; color: var(--muted); }
+.dl.add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.dl.del { background: color-mix(in srgb, var(--err) 14%, transparent); }
+.dl.hunk { color: var(--c2); background: var(--surface-2); }
+.det { overflow: auto; }
+.det .card-pad + .card-pad { border-top: 1px solid var(--line); }
+.kv { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 4px 8px; font-size: 12px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmsg { margin: 8px 0 0; white-space: pre-wrap; font-size: 12.5px; color: var(--fg-emph); }
+.ava { display: inline-grid; place-items: center; width: 16px; height: 16px; font-size: 9.5px; font-weight: 600; border-radius: 50%; color: var(--on-accent); background: var(--h, var(--c3)); }
+
+/* Mockup bar (not part of the app) */
+.mbar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px; font-size: 12px; color: var(--muted); background: var(--surface-2); border-top: 1px dashed var(--line-strong); }
+.mbar b { color: var(--fg-emph); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="app">
+<header class="titlebar">
+  <div class="brand"><i></i>MaomiTerminal</div>
+  <div class="tabs" id="tabs">
+    <button class="term-tab on" data-view="term"><span class="lbl">pwsh MaomiTerminal</span><span class="x">&times;</span></button>
+    <button class="term-tab" data-view="term"><span class="lbl">zsh ~ (ssh: fennec)</span><span class="x">&times;</span></button>
+    <button class="term-tab hidden" id="repoTabBtn" data-view="repo"><span class="lbl">Repo · MaomiTerminal</span><span class="x" id="repoTabX">&times;</span></button>
+  </div>
+  <div class="tb-spacer"></div>
+  <div class="win-ctl"><span>&#8211;</span><span>&#9633;</span><span>&times;</span></div>
+</header>
+
+<div class="body">
+  <nav class="activity-rail" aria-label="Activity">
+    <button class="rail-btn" title="Terminals" aria-label="Terminals"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 10l3 2-3 2M13 14h3"/></svg></button>
+    <button class="rail-btn" title="Files" aria-label="Files"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+    <button class="rail-btn on" id="railRepo" title="Repo (Ctrl+Shift+G)" aria-label="Repo"><svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-6 4-11 8"/></svg></button>
+    <button class="rail-btn" title="Workbench" aria-label="Workbench"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="10" rx="1.5"/></svg></button>
+    <div class="grow"></div>
+    <button class="rail-btn" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg></button>
+  </nav>
+
+  <!-- ===== Repo dock: follows the focused terminal's repo ===== -->
+  <aside class="dock" id="dock" aria-label="Repo">
+    <div class="dhead">
+      <div class="drow">
+        <span class="dtitle">Repo</span><span class="sp"></span>
+        <span class="chip chip--warn st-dirty" id="chipDirty"><span class="dot"></span>9 changes</span>
+        <span class="chip chip--ok st-clean hidden"><span class="dot"></span>Clean</span>
+      </div>
+      <div class="drow st-repo">
+        <span class="repo-nm">MaomiTerminal</span>
+        <span class="follow" title="Follows the focused terminal's folder">· from pwsh tab</span>
+      </div>
+      <button class="bpick st-repo" aria-label="Branch"><svg class="i" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-6 4-11 8"/></svg><span class="nm">main</span><span class="ab">↑2 ↓1</span><svg class="i" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+      <div class="tools st-repo" role="toolbar" aria-label="Git commands">
+        <button class="btn btn--sm" id="fetchBtn" title="Fetch · last 3 min ago" aria-label="Fetch"><svg class="i" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
+        <button class="btn btn--sm" title="Pull · 1 behind" aria-label="Pull, 1 behind"><svg class="i" viewBox="0 0 24 24"><path d="M12 4v13M6 11l6 6 6-6M5 21h14"/></svg><span class="nb">1</span></button>
+        <button class="btn btn--sm" title="Push · 2 ahead" aria-label="Push, 2 ahead"><svg class="i" viewBox="0 0 24 24"><path d="M12 20V7M6 13l6-6 6 6M5 3h14"/></svg><span class="nb">2</span></button>
+        <button class="btn btn--sm" title="Stash changes" aria-label="Stash"><svg class="i" viewBox="0 0 24 24"><path d="M3 4h18v5H3z"/><path d="M5 9v10h14V9M10 13h4"/></svg></button>
+        <span class="sp"></span>
+        <button class="btn btn--sm btn--quiet" title="Open the full Repo tab" aria-label="Open the full Repo tab" data-open-repo><svg class="i" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>
+      </div>
+    </div>
+
+    <div class="dscroll st-repo">
+      <details class="fold" open>
+        <summary><svg class="i chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>Commits<span class="sp"></span><span class="seg" style="text-transform:none;letter-spacing:0;font-weight:400" onclick="event.preventDefault()"><button class="on">Branch</button><button>All</button></span></summary>
+        <div id="miniList"></div>
+        <div class="more" id="miniMore">Loading older commits…</div>
+      </details>
+
+      <details class="fold" open>
+        <summary><svg class="i chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>Working copy<span class="n st-dirty">9</span><span class="sp"></span><span class="sugg st-dirty" title="From the board: 3 tasks ticked on “Repo model”. Nothing is committed until you click Commit."><svg class="i" viewBox="0 0 16 16" style="width:11px;height:11px"><path d="M8 1.5l1.6 4.9 4.9 1.6-4.9 1.6L8 14.5l-1.6-4.9L1.5 8l4.9-1.6z" fill="currentColor" stroke="none"/></svg>Suggested</span></summary>
+        <div class="st-dirty">
+          <div class="cbox">
+            <div class="row1"><span>Title</span><span class="sp"></span><span>44 / 72</span><button class="linkbtn">Clear</button></div>
+            <input class="field" value="Repo model: snapshot, log paging and refresh" maxlength="72" aria-label="Commit title">
+            <textarea class="field" rows="3" aria-label="Description">- RepoModel entity with snapshot + log paging
+- Refresh on .git changes (debounced)
+- Tests for status parsing</textarea>
+            <div class="split"><button class="btn btn--primary btn--sm">Commit staged (2)</button><button class="btn btn--primary btn--sm" aria-label="More commit actions" title="Commit all · Commit &amp; push · Amend"><svg class="i" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></div>
+          </div>
+          <div class="grp">
+            <div class="gh">Conflicts <span class="n">1</span><span class="sp"></span></div>
+            <div class="file"><span class="st c">!</span><span class="p"><span class="dir">crates/ui/src/</span>rail.rs</span><span class="acts"><button class="ib" title="Open in the Repo tab"><svg class="i" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8 8"/></svg></button></span><span class="d">both</span></div>
+          </div>
+          <div class="grp">
+            <div class="gh">Staged <span class="n">2</span><span class="sp"></span><span class="acts"><button class="ib" title="Unstage all"><svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button></span></div>
+            <div class="file"><span class="st a">A</span><span class="p"><span class="dir">crates/git/src/</span>model.rs</span><span class="acts"><button class="ib" title="Unstage"><svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button></span><span class="d">+184</span></div>
+            <div class="file"><span class="st m">M</span><span class="p"><span class="dir">crates/git/src/</span>lib.rs</span><span class="acts"><button class="ib" title="Unstage"><svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button></span><span class="d">+6 −1</span></div>
+          </div>
+          <div class="grp">
+            <div class="gh">Changes <span class="n">6</span><span class="sp"></span><span class="acts"><button class="ib danger" title="Discard all…"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button><button class="ib" title="Stage all"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></span></div>
+            <div id="chgList"></div>
+          </div>
+        </div>
+        <div class="clean st-clean hidden"><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Nothing to commit. Working tree is clean.</div>
+      </details>
+    </div>
+
+    <div class="empty st-norepo hidden">
+      <svg class="i" viewBox="0 0 24 24" style="width:28px;height:28px"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-6 4-11 8"/></svg>
+      <h3>No git repo here</h3>
+      <span>The focused terminal is in <span class="mono">C:\Users\maomi</span>. cd into a repo and this updates.</span>
+      <button class="btn btn--sm">git init here</button>
+    </div>
+
+    <div class="outstrip st-repo" id="outstrip"><span class="chip chip--ok"><span class="dot"></span>Done</span><span class="mono">git fetch origin</span><span class="sp"></span><span class="muted">0.8 s</span></div>
+    <div class="foot st-repo"><a href="#" data-open-repo>Open the full Repo tab →</a></div>
+  </aside>
+
+  <main class="centre">
+    <!-- Terminal view -->
+    <section class="term-pane focused" id="vTerm" aria-label="pwsh MaomiTerminal">
+      <div class="term-head"><span class="shell">pwsh</span><span class="sp">F:\GitProjects\Automation\MaomiTerminal</span></div>
+      <div class="term-main"><pre class="term-body">PS F:\GitProjects\Automation\MaomiTerminal&gt; cargo test -p maomi-git
+   Compiling maomi-git v0.3.3
+    Finished test [unoptimized] target(s) in 4.21s
+     Running unittests src/lib.rs
+test result: ok. 64 passed; 0 failed
+
+PS F:\GitProjects\Automation\MaomiTerminal&gt; <span class="term-cursor"></span></pre></div>
+    </section>
+
+    <!-- Main Repo tab -->
+    <div class="rv hidden" id="vRepo">
+      <nav class="card refs" aria-label="Refs">
+        <div class="sect-title">Local</div>
+        <button class="sref sel"><span>main</span><span class="aside">↑2 ↓1</span></button>
+        <button class="sref"><span>feature/repo-dock</span></button>
+        <button class="sref"><span>fix/emoji-width</span><span class="aside">no upstream</span></button>
+        <div class="sect-title">Remotes</div>
+        <button class="sref"><span>origin</span><span class="aside">GitHub</span></button>
+        <button class="sref indent"><span>main</span></button>
+        <button class="sref indent"><span>feature/repo-dock</span></button>
+        <div class="sect-title">Tags</div>
+        <button class="sref"><span>v0.3.3</span></button>
+        <button class="sref"><span>v0.3.2</span></button>
+        <div class="sect-title">Stashes</div>
+        <button class="sref"><span>try lane colours</span><span class="aside">@{0}</span></button>
+      </nav>
+
+      <section class="card" aria-label="Commit graph">
+        <div class="gtools">
+          <input class="field" placeholder="Search message, author or sha…" aria-label="Search commits">
+          <div class="seg" role="group" aria-label="Which refs"><button class="on">All refs</button><button>Current branch</button></div>
+          <span class="sp"></span><span class="muted" style="font-size:12px">1,284 commits · 200 loaded</span>
+        </div>
+        <div id="graphView" style="display:flex;flex-direction:column;flex:1;min-height:0">
+          <div class="ghead"><span>Graph</span><span>Message</span><span>Author</span><span>Sha</span><span>Date</span></div>
+          <div class="gbody" id="gbody"></div>
+        </div>
+        <div class="diffv hidden" id="diffView">
+          <div class="dvh">
+            <button class="btn btn--sm" id="dvBack">← Graph</button>
+            <span class="mono" id="dvPath">crates/term/src/grapheme.rs</span>
+            <span class="sp"></span>
+            <span class="chip chip--ok">+3</span><span class="chip chip--err">−1</span>
+            <div class="seg" role="group" aria-label="Diff layout"><button class="on">Unified</button><button>Split</button></div>
+          </div>
+          <pre class="dvb" id="dvBody"></pre>
+        </div>
+      </section>
+
+      <aside class="card det" aria-label="Details" id="det"></aside>
+    </div>
+  </main>
+</div>
+<footer class="statusbar"><span><b>main</b> ↑2 ↓1</span><span>9 changes</span><span class="sp"></span><span id="sbBusy">git: idle</span></footer>
+</div>
+
+<div class="mbar">
+  <b>Mockup</b>
+  <span>View</span>
+  <div class="seg" id="mView"><button class="on" data-v="term">Terminal + Repo dock</button><button data-v="repo">Main Repo tab</button></div>
+  <span>Working copy</span>
+  <div class="seg" id="mState"><button class="on" data-s="dirty">Changes</button><button data-s="clean">Clean</button><button data-s="norepo">Not a repo</button></div>
+  <button class="btn btn--sm" id="mBusy">Simulate fetch</button>
+  <span class="sp"></span>
+  <span>Theme</span>
+  <div class="seg" id="mTheme"><button data-t="aurora-dark">Aurora</button><button data-t="aurora-light">Light</button><button data-t="onyx-dark">Onyx</button><button data-t="mochi">Mochi</button></div>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var themes = ["aurora-dark", "aurora-light", "onyx-dark", "onyx-light", "mochi"];
+  var q = new URLSearchParams(location.search).get("theme");
+  function setTheme(t) { root.setAttribute("data-theme", t); document.querySelectorAll("#mTheme button").forEach(function (b) { b.classList.toggle("on", b.dataset.t === t); }); }
+  setTheme(themes.indexOf(q) >= 0 ? q : "aurora-dark");
+  document.querySelectorAll("#mTheme button").forEach(function (b) { b.onclick = function () { setTheme(b.dataset.t); }; });
+
+  var LANE = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)"];
+  // lane, parents (row indexes), message, author, sha, age, refs
+  var C = [
+    { l: 0, p: [1], m: "// WIP · 9 changes", wip: true, a: "", s: "", d: "now" },
+    { l: 0, p: [2], m: "ZWJ emoji draw as one 2-cell grapheme", a: "InfernoDragon0", h: "c1", s: "dcc771e", d: "1d", r: ["main"] },
+    { l: 0, p: [3, 5], m: "Merge feature/repo-dock", a: "InfernoDragon0", h: "c1", s: "a91f02c", d: "2d", merge: true },
+    { l: 0, p: [4], m: "Release 0.3.2", a: "InfernoDragon0", h: "c1", s: "7dfe377", d: "8d", r: ["v0.3.2"], tag: true },
+    { l: 0, p: [7], m: "Mockup Studio: Workbench button opens a Mockups main tab", a: "Maomi (opus)", h: "c5", s: "f22e1ce", d: "8d" },
+    { l: 1, p: [6], m: "Repo dock: follow the focused terminal", a: "Maomi (sonnet)", h: "c4", s: "5be3a10", d: "9d", r: ["feature/repo-dock"] },
+    { l: 1, p: [7], m: "maomi-git: port git-core runner + parsers", a: "Maomi (sonnet)", h: "c4", s: "e04b7aa", d: "9d" },
+    { l: 0, p: [8], m: "Release 0.3.1", a: "InfernoDragon0", h: "c1", s: "68b46a0", d: "10d", r: ["v0.3.1"], tag: true },
+    { l: 0, p: [9], m: "Files dock on the rail; Ctrl+click opens files", a: "InfernoDragon0", h: "c1", s: "fff6dbd", d: "11d" },
+    { l: 0, p: [10], m: "Snippets: run in the focused pane", a: "Maomi (opus)", h: "c5", s: "3c7d921", d: "12d" },
+    { l: 0, p: [11], m: "Hosts list: group by tag", a: "InfernoDragon0", h: "c1", s: "b20e5f4", d: "13d" },
+    { l: 0, p: [], m: "Release 0.3.0", a: "InfernoDragon0", h: "c1", s: "0a4c8e2", d: "15d", r: ["v0.3.0"], tag: true }
+  ];
+
+  function laneSvg(rows, rowH, laneW, x0) {
+    var w = laneW * 3, h = rows.length * rowH, out = [];
+    rows.forEach(function (c, i) {
+      var x = x0 + c.l * laneW, y = i * rowH + rowH / 2;
+      c.p.forEach(function (pi) {
+        if (pi >= rows.length) return;
+        var p = rows[pi], px = x0 + p.l * laneW, py = pi * rowH + rowH / 2, col = LANE[Math.max(c.l, p.l)];
+        if (px === x) out.push('<path d="M' + x + ' ' + y + 'V' + py + '" stroke="' + col + '" stroke-width="2" fill="none"' + (c.wip ? ' stroke-dasharray="3 3"' : '') + '/>');
+        else out.push('<path d="M' + x + ' ' + y + 'C' + x + ' ' + (y + rowH * .8) + ' ' + px + ' ' + (y + rowH * .2) + ' ' + px + ' ' + (y + rowH) + 'V' + py + '" stroke="' + col + '" stroke-width="2" fill="none"/>');
+      });
+    });
+    rows.forEach(function (c, i) {
+      var x = x0 + c.l * laneW, y = i * rowH + rowH / 2, col = LANE[c.l];
+      out.push(c.wip ? '<circle cx="' + x + '" cy="' + y + '" r="4" fill="var(--bg)" stroke="var(--warn)" stroke-width="2"/>'
+        : '<circle cx="' + x + '" cy="' + y + '" r="' + (c.merge ? 3 : 4) + '" fill="' + (c.merge ? 'var(--bg)' : col) + '" stroke="' + col + '" stroke-width="2"/>');
+    });
+    return { w: w, h: h, body: out.join("") };
+  }
+
+  function refPills(c) { return (c.r || []).map(function (r) { return '<span class="refp' + (c.tag ? ' tag' : '') + '">' + r + '</span>'; }).join(""); }
+
+  // Dock: compact list (one svg per row keeps the mini list simple)
+  var mini = C.slice(0, 8), mh = 26;
+  var g = laneSvg(mini, mh, 9, 6);
+  document.getElementById("miniList").innerHTML =
+    '<div style="position:relative">' +
+    '<svg class="lane" style="position:absolute;left:2px;top:0;width:30px;height:' + g.h + 'px" viewBox="0 0 30 ' + g.h + '">' + g.body + '</svg>' +
+    mini.map(function (c, i) {
+      return '<div class="cm' + (c.wip ? ' wip' : '') + '" data-i="' + i + '"><span></span><span class="msg">' + c.m + refPills(c) + '</span><span class="meta">' +
+        (c.wip ? '' : '<span class="ava" style="--h: var(--' + c.h + ')">' + c.a[0] + '</span>') + c.d + '</span></div>';
+    }).join("") + '</div>';
+
+  var CH = [["m", "crates/ui/src/shell/", "rail.rs", "+31 −12"], ["a", "crates/ui/src/repo/", "dock.rs", "+220"], ["r", "crates/git/src/", "graph.rs", "+2 −2"], ["d", "crates/ui/src/", "old_git.rs", "−58"], ["u", "crates/git/tests/", "model.rs", ""], ["u", "", "notes.md", ""]];
+  document.getElementById("chgList").innerHTML = CH.map(function (f) {
+    return '<div class="file"><span class="st ' + f[0] + '">' + (f[0] === "u" ? "?" : f[0].toUpperCase()) + '</span><span class="p"><span class="dir">' + f[1] + '</span>' + f[2] + '</span>' +
+      '<span class="acts"><button class="ib danger" title="Discard…"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg></button><button class="ib" title="Stage"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></span><span class="d">' + f[3] + '</span></div>';
+  }).join("");
+
+  // Main tab: full graph
+  var rowH = 28, G = laneSvg(C, rowH, 14, 8);
+  var gb = document.getElementById("gbody");
+  gb.innerHTML = '<svg class="graph" width="' + G.w + '" height="' + G.h + '" viewBox="0 0 ' + G.w + ' ' + G.h + '">' + G.body + '</svg>' +
+    C.map(function (c, i) {
+      return '<div class="grow' + (c.wip ? ' wip' : '') + (i === 0 ? ' sel' : '') + '" data-i="' + i + '"><span></span><span class="msg"><span class="t">' + c.m + '</span>' + refPills(c) + '</span>' +
+        '<span class="au">' + (c.a ? '<span class="ava" style="--h: var(--' + c.h + ')">' + c.a[0] + '</span> ' + c.a : '') + '</span><span class="sha mono">' + c.s + '</span><span class="dt">' + c.d + '</span></div>';
+    }).join("") + '<div class="more">Loading older commits… (200 per page, in the background)</div>';
+
+  var det = document.getElementById("det");
+  function wipDetails() {
+    det.innerHTML = '<div class="card-pad"><div class="card-head"><h3>Working copy</h3><span class="chip chip--warn"><span class="dot"></span>9 changes</span></div>' +
+      '<div class="callout"><b>Suggested commit from the board</b><span class="why">3 tasks ticked on “Repo model” this session. Nothing is committed until you click.</span></div></div>' +
+      '<div class="card-pad"><div class="sect-title">Staged 2</div>' + fileRows([["a", "crates/git/src/", "model.rs", "+184"], ["m", "crates/git/src/", "lib.rs", "+6 −1"]]) +
+      '<div class="sect-title" style="margin-top:8px">Changes 6</div>' + fileRows(CH) + '</div>';
+  }
+  function fileRows(list) {
+    return list.map(function (f) { return '<div class="file" data-diff="' + f[1] + f[2] + '"><span class="st ' + f[0] + '">' + (f[0] === "u" ? "?" : f[0].toUpperCase()) + '</span><span class="p"><span class="dir">' + f[1] + '</span>' + f[2] + '</span><span></span><span class="d">' + f[3] + '</span></div>'; }).join("");
+  }
+  function commitDetails(c) {
+    det.innerHTML = '<div class="card-pad"><div class="card-head"><h3 class="mono">' + c.s + '</h3>' + refPills(c) + '</div>' +
+      '<dl class="kv"><dt>Author</dt><dd><span class="ava" style="--h: var(--' + c.h + ')">' + c.a[0] + '</span> ' + c.a + '</dd><dt>Date</dt><dd>' + c.d + ' ago</dd><dt>Parents</dt><dd class="mono">' + c.p.map(function (i) { return C[i] ? C[i].s : ""; }).join(" ") + '</dd></dl>' +
+      '<p class="cmsg">' + c.m + '</p>' +
+      '<div style="display:flex;gap:6px;margin-top:10px"><button class="btn btn--sm">Checkout</button><button class="btn btn--sm">New branch here</button><button class="btn btn--sm btn--quiet">Copy sha</button></div></div>' +
+      '<div class="card-pad"><div class="sect-title">Files 3</div>' + fileRows([["m", "crates/term/src/", "grapheme.rs", "+3 −1"], ["m", "crates/ui/src/terminal_view/", "paint.rs", "+12 −4"], ["a", "packaging/", "fetch-conpty.ps1", "+48"]]) + '</div>';
+  }
+  wipDetails();
+
+  var DIFF = [["hunk", "", "", "@@ -78,7 +78,9 @@ fn is_pictographic(c: char) -> bool"], ["", "78", "78", "    matches!(c as u32,"], ["del", "79", "", "        0x1F300..=0x1FAFF"], ["add", "", "79", "        0x1F300..=0x1FAFF"], ["add", "", "80", "            | 0x2600..=0x27BF"], ["add", "", "81", "            | 0x1F1E6..=0x1F1FF"], ["", "80", "82", "    )"], ["", "81", "83", "}"]];
+  function showDiff(path) {
+    document.getElementById("dvPath").textContent = path;
+    document.getElementById("dvBody").innerHTML = DIFF.map(function (d) { return '<div class="dl ' + d[0] + '"><span class="ln">' + d[1] + '</span><span class="ln">' + d[2] + '</span><span>' + d[3] + '</span></div>'; }).join("");
+    document.getElementById("graphView").classList.add("hidden"); document.getElementById("diffView").classList.remove("hidden");
+  }
+  document.getElementById("dvBack").onclick = function () { document.getElementById("diffView").classList.add("hidden"); document.getElementById("graphView").classList.remove("hidden"); };
+  det.addEventListener("click", function (e) { var f = e.target.closest("[data-diff]"); if (f) showDiff(f.dataset.diff); });
+
+  function selectRow(i) {
+    gb.querySelectorAll(".grow").forEach(function (r) { r.classList.toggle("sel", +r.dataset.i === i); });
+    if (C[i].wip) wipDetails(); else commitDetails(C[i]);
+  }
+  gb.addEventListener("click", function (e) { var r = e.target.closest(".grow"); if (r) selectRow(+r.dataset.i); });
+
+  // View switching: clicking a commit in the dock opens the main Repo tab on it
+  var tabBtn = document.getElementById("repoTabBtn");
+  function setView(v) {
+    document.getElementById("vTerm").classList.toggle("hidden", v !== "term");
+    document.getElementById("vRepo").classList.toggle("hidden", v !== "repo");
+    if (v === "repo") tabBtn.classList.remove("hidden");
+    document.querySelectorAll("#tabs .term-tab").forEach(function (t, i) { t.classList.toggle("on", v === "repo" ? t === tabBtn : i === 0); });
+    document.querySelectorAll("#mView button").forEach(function (b) { b.classList.toggle("on", b.dataset.v === v); });
+  }
+  document.querySelectorAll("[data-open-repo]").forEach(function (a) { a.onclick = function (e) { e.preventDefault(); setView("repo"); }; });
+  document.getElementById("miniList").addEventListener("click", function (e) { var r = e.target.closest(".cm"); if (r) { setView("repo"); selectRow(+r.dataset.i); } });
+  document.querySelectorAll("#tabs .term-tab").forEach(function (t) { t.onclick = function (e) { if (e.target.id === "repoTabX") { tabBtn.classList.add("hidden"); setView("term"); return; } setView(t.dataset.view); }; });
+  document.querySelectorAll("#mView button").forEach(function (b) { b.onclick = function () { setView(b.dataset.v); }; });
+
+  function setState(s) {
+    document.querySelectorAll(".st-dirty").forEach(function (e) { e.classList.toggle("hidden", s !== "dirty"); });
+    document.querySelectorAll(".st-clean").forEach(function (e) { e.classList.toggle("hidden", s !== "clean"); });
+    document.querySelectorAll(".st-repo").forEach(function (e) { e.classList.toggle("hidden", s === "norepo"); });
+    document.querySelectorAll(".st-norepo").forEach(function (e) { e.classList.toggle("hidden", s !== "norepo"); });
+    document.querySelectorAll("#mState button").forEach(function (b) { b.classList.toggle("on", b.dataset.s === s); });
+  }
+  document.querySelectorAll("#mState button").forEach(function (b) { b.onclick = function () { setState(b.dataset.s); }; });
+
+  // Git commands run in the background: the button spins, the strip shows the live line, the UI stays usable.
+  document.getElementById("mBusy").onclick = function () {
+    var fb = document.getElementById("fetchBtn"), os = document.getElementById("outstrip"), sb = document.getElementById("sbBusy");
+    fb.classList.add("busy"); fb.disabled = true; sb.textContent = "git: fetching…";
+    os.innerHTML = '<span class="chip chip--now"><span class="dot"></span>Running</span><span class="mono">git fetch origin</span><span class="sp"></span><span class="muted">Receiving objects 42%</span><button class="ib" title="Cancel"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>';
+    setTimeout(function () {
+      fb.classList.remove("busy"); fb.disabled = false; sb.textContent = "git: idle";
+      os.innerHTML = '<span class="chip chip--ok"><span class="dot"></span>Done</span><span class="mono">git fetch origin</span><span class="sp"></span><span class="muted">2.4 s</span>';
+    }, 2400);
+  };
+})();
+</script>
+</body>
+</html>

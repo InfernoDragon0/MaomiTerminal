@@ -1,0 +1,6 @@
+--porcelain=v2
+-z
+--branch
+--show-stash
+--untracked-files=all
+--ignore-submodules=none

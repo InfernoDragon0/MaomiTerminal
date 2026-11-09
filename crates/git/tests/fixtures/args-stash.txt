@@ -1,0 +1,3 @@
+list
+-z
+--format=%gd%x1f%H%x1f%ct%x1f%gs
