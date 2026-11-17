@@ -50,10 +50,12 @@ impl Theme {
         for (i, colour) in normal.iter().enumerate().take(7).skip(1) {
             ansi[8 + i] = colour.mix(toward, 0.2);
         }
-        ansi[8] = if dark {
-            p.muted
-        } else {
-            p.fg_emph.mix(p.muted, 0.5)
+        ansi[8] = match (dark, self.skin) {
+            // Mochi's muted is light enough that Claude Code's pinned prompt bar (ESC[100m)
+            // glared; this shade keeps dim text at 4.3:1 on its background.
+            (true, Skin::Mochi) => Color::new(0x85, 0x7d, 0x74, 255),
+            (true, _) => p.muted,
+            (false, _) => p.fg_emph.mix(p.muted, 0.5),
         };
         ansi[15] = if dark { p.white } else { p.fg };
 
