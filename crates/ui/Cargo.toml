@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 gpui-kit.workspace = true
+# Kitty graphics frames for GPUI's RenderImage (same crate version gpui uses).
+image.workspace = true
 maomi-term.workspace = true
 maomi-config.workspace = true
 maomi-vault.workspace = true

@@ -23,7 +23,9 @@ use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor, Rgb, St
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::grapheme::{GraphemeTerm, Graphemes};
+use crate::images::{ImageStore, KittyImage};
 use crate::integration;
+use crate::kitty::KittyScanner;
 use crate::osc::{OscScanner, PromptMark, ShellMark};
 use crate::shell::{Shell, ShellKind, default_shell};
 use crate::snapshot::GridSnapshot;
@@ -237,9 +239,15 @@ struct Shared {
     size: Mutex<TermSize>,
     palette: Mutex<QueryPalette>,
     input: mpsc::Sender<Vec<u8>>,
+    /// Kitty graphics images, written by the reader thread and read while painting.
+    images: Mutex<ImageStore>,
 }
 
 impl Shared {
+    fn images(&self) -> std::sync::MutexGuard<'_, ImageStore> {
+        self.images.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn send(&self, event: TermEvent) {
         // Unbounded; fails only when every receiver is gone, which is fine to ignore.
         let _ = self.events.try_send(event);
@@ -465,7 +473,7 @@ impl PtySession {
         let master = Arc::new(Mutex::new(Some(pair.master)));
 
         let waiter_master = master.clone();
-        let started = start(reader, writer, cwd, size, &options, move || {
+        let started = start(reader, writer, cwd, size, &options, true, move || {
             let code = child.wait().ok().map(|status| status.exit_code());
             drop(
                 waiter_master
@@ -496,7 +504,8 @@ impl PtySession {
         let size = options.size.clamped();
         io.control.resize(size);
         let exit = io.exit;
-        let started = start(io.reader, io.writer, None, size, &options, move || {
+        // Kitty `t=f` paths name files on the remote machine, so none are read here.
+        let started = start(io.reader, io.writer, None, size, &options, false, move || {
             exit.recv().ok().flatten()
         })?;
         Ok(Self {
@@ -587,6 +596,16 @@ impl PtySession {
             .lock()
             .selection_to_string()
             .filter(|s| !s.is_empty())
+    }
+
+    /// The Kitty graphics image with this id, if the program sent one.
+    pub fn image(&self, id: u32) -> Option<KittyImage> {
+        self.shared.images().get(id)
+    }
+
+    /// Changes whenever an image is added, replaced or freed.
+    pub fn images_generation(&self) -> u64 {
+        self.shared.images().generation()
     }
 
     /// Sends input bytes (keys, paste) to the shell. Never blocks.
@@ -803,6 +822,7 @@ fn start(
     cwd: Option<PathBuf>,
     size: TermSize,
     options: &SessionOptions,
+    local_files: bool,
     wait: impl FnOnce() -> Option<u32> + Send + 'static,
 ) -> anyhow::Result<Started> {
     let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
@@ -818,6 +838,8 @@ fn start(
         size: Mutex::new(size),
         palette: Mutex::new(QueryPalette::default()),
         input: input_tx,
+        // A local Windows session runs behind ConPTY, which cannot carry graphics replies.
+        images: Mutex::new(ImageStore::new(local_files, !(cfg!(windows) && local_files))),
     });
 
     let config = term_config(options.scrollback, options.cursor_shape, options.osc52_copy);
@@ -884,6 +906,8 @@ fn read_loop(
     let mut graphemes = Graphemes::default();
     let mut scanner = OscScanner::default();
     let mut marks = Vec::new();
+    let mut kitty = KittyScanner::default();
+    let mut graphics = Vec::new();
     let mut record = recorder();
     loop {
         let n = match reader.read(&mut buf) {
@@ -898,6 +922,14 @@ fn read_loop(
             let _ = file.write_all(bytes);
         }
         scanner.feed(bytes, &mut marks);
+        // Before the grid takes the chunk: placeholder cells printed right after a transmit
+        // then find their image.
+        kitty.feed(bytes, &mut graphics);
+        for command in graphics.drain(..) {
+            if let Some(reply) = shared.images().apply(&command) {
+                let _ = shared.input.send(reply);
+            }
+        }
         parser.advance(
             &mut GraphemeTerm::new(&mut term.lock(), &mut graphemes),
             bytes,

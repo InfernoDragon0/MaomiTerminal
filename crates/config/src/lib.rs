@@ -89,6 +89,8 @@ pub struct TerminalSettings {
     /// "block", "bar" or "underline"; programs can still change it while they run.
     pub cursor_style: String,
     pub cursor_blink: bool,
+    /// Tell Claude Code it may send Kitty graphics pictures (new tabs only).
+    pub images: bool,
 }
 
 /// The shell new tabs start. `program: None` picks the best one found on the machine.
@@ -196,6 +198,7 @@ impl Default for TerminalSettings {
             scrollback: 10_000,
             cursor_style: "block".into(),
             cursor_blink: true,
+            images: true,
         }
     }
 }

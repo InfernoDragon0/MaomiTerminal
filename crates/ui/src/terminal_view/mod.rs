@@ -2,9 +2,11 @@
 
 mod builtin;
 mod element;
+mod images;
 mod input;
 mod layout;
 mod paths;
+mod preview;
 mod smooth;
 mod win32_input;
 
@@ -113,6 +115,8 @@ pub struct TerminalView {
     backdrop: f32,
     /// Overlay text: white default text with a black outline (faded detached windows).
     text_outline: bool,
+    /// A clicked inline image shown large over the window.
+    preview: Option<preview::Preview>,
     _events: Task<()>,
     _focus: [Subscription; 2],
 }
@@ -157,6 +161,7 @@ impl TerminalView {
             query_theme: None,
             backdrop: 1.,
             text_outline: false,
+            preview: None,
             _events: events_task,
             _focus: focus,
         }
@@ -227,6 +232,7 @@ impl TerminalView {
         self.ssh = None;
         self.query_theme = None;
         self.pane = Rc::default();
+        self.preview = None;
         cx.emit(TerminalViewEvent::Restarted);
         cx.notify();
     }
@@ -354,6 +360,14 @@ impl TerminalView {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        // An open preview takes the keys: Esc closes it, nothing reaches the shell.
+        if self.preview.is_some() {
+            if keystroke.key == "escape" {
+                self.close_preview(cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if matches!(self.connection, Some(Connection::Connecting(_))) {
             cx.stop_propagation();
             return;
@@ -553,6 +567,7 @@ impl Render for TerminalView {
                 .text_outline(self.text_outline),
             )
             .children(banner)
+            .children(self.render_preview(window, cx))
     }
 }
 

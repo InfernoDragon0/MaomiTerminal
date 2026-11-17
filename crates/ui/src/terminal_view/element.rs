@@ -21,6 +21,7 @@ use maomi_term::alacritty_terminal::selection::{Selection, SelectionType};
 use maomi_term::{CellFlags, CursorShape, GridSnapshot, PtySession, TermMode, TermSize};
 
 use super::builtin;
+use super::images::{ImageCache, ImagePaint, layout_images};
 use super::input::{self, Link, LinkTarget, ReportButton, ReportKind};
 use super::layout::{self, TextStyle, UnderlineKind};
 use super::smooth::SmoothScroll;
@@ -71,6 +72,7 @@ pub(crate) struct PaneState {
     /// Path under the pointer whose existence check is still running.
     awaiting_link: Option<Link>,
     paths: PathProbes,
+    pub(crate) images: ImageCache,
 }
 
 /// Recent existence checks of hovered paths: `Some(is_dir)` when the path exists.
@@ -194,6 +196,8 @@ pub struct LayoutState {
     rows_top: Pixels,
     pane: PaintQuad,
     backgrounds: Vec<PaintQuad>,
+    /// Kitty graphics slices, painted over the backgrounds and under selection and text.
+    images: Vec<ImagePaint>,
     selections: Vec<PaintQuad>,
     lines: Vec<(Point<Pixels>, ShapedLine)>,
     /// Black copies of `lines`, drawn around each one when the text is outlined.
@@ -315,6 +319,15 @@ impl Element for TerminalElement {
             .iter()
             .map(|&(span, color)| fill(span_bounds(span), color.to_hsla()))
             .collect();
+        let images = layout_images(
+            &mut self.state.borrow_mut().images,
+            &self.session,
+            &snapshot,
+            cell_origin,
+            cell_width,
+            line_height,
+            window,
+        );
         let selection = self.colors.selection.to_hsla();
         let selections = grid_layout
             .selections
@@ -469,6 +482,7 @@ impl Element for TerminalElement {
             rows_top,
             pane: fill(bounds, self.colors.bg.to_hsla().opacity(self.backdrop)),
             backgrounds,
+            images,
             selections,
             lines,
             outlines,
@@ -505,6 +519,16 @@ impl Element for TerminalElement {
             window.paint_quad(layout.pane.clone());
             for quad in layout.backgrounds.drain(..) {
                 window.paint_quad(quad);
+            }
+            for slice in layout.images.drain(..) {
+                let _ = window.paint_image(
+                    slice.clip,
+                    slice.image_bounds,
+                    Default::default(),
+                    slice.image,
+                    0,
+                    false,
+                );
             }
             for quad in layout.selections.drain(..) {
                 window.paint_quad(quad);
@@ -669,6 +693,22 @@ impl TerminalElement {
                         if known != Some(None) {
                             return;
                         }
+                    }
+                }
+                // A plain click on an inline image opens the large preview, also while the program
+                // reads the mouse (Claude Code does): pictures have no click of their own there.
+                if event.button == MouseButton::Left
+                    && event.click_count == 1
+                    && !event.modifiers.shift
+                {
+                    let row = snapshot.rows_above + row;
+                    if let Some(run) = snapshot
+                        .image_runs()
+                        .into_iter()
+                        .find(|run| run.row == row && (run.col..run.col + run.len).contains(&col))
+                    {
+                        _ = view.update(cx, |view, cx| view.open_preview(run.image_id, cx));
+                        return;
                     }
                 }
                 let mut state = state.borrow_mut();

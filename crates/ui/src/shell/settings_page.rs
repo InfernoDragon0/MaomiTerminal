@@ -348,6 +348,7 @@ impl SettingsPage {
         });
         let blink = config.terminal.cursor_blink;
         let smooth = config.terminal.smooth_scroll;
+        let images = config.terminal.images;
 
         section(
             "Appearance",
@@ -405,6 +406,18 @@ impl SettingsPage {
                         .on_click(|on, _, cx| {
                             let on = *on;
                             settings::update_config(cx, |c| c.terminal.smooth_scroll = on);
+                        })
+                        .into_any_element(),
+                ),
+                row(
+                    "Inline images",
+                    Some("Lets Claude Code show pictures in the terminal. Applies to new tabs."),
+                    p,
+                    Switch::new("switch-images")
+                        .checked(images)
+                        .on_click(|on, _, cx| {
+                            let on = *on;
+                            settings::update_config(cx, |c| c.terminal.images = on);
                         })
                         .into_any_element(),
                 ),

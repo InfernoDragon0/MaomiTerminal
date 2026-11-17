@@ -131,7 +131,8 @@ fn layout_row(
         let style = text_style(cell, fg, colors);
         let blank = (cell.c == ' ' || cell.c == '\0') && cell.zerowidth.is_empty();
         let visible = !blank || style.underline.is_some() || style.strike;
-        if !visible || cell.flags.contains(CellFlags::HIDDEN) {
+        // Kitty image placeholders show pixels (terminal_view::images), never a glyph.
+        if !visible || cell.flags.contains(CellFlags::HIDDEN) || cell.c == maomi_term::PLACEHOLDER {
             out.batches.extend(batch.take());
             continue;
         }

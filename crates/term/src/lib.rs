@@ -1,8 +1,11 @@
 //! Terminal backend: PTY sessions and terminal emulation. Has no GPUI dependency.
 
 pub mod grapheme;
+mod images;
 mod integration;
+mod kitty;
 mod osc;
+pub mod placeholder;
 mod priority;
 pub mod process;
 pub mod session;
@@ -13,6 +16,8 @@ pub use session::{
     EventProxy, PromptState, PtySession, QueryPalette, RemoteControl, RemoteIo, SessionOptions,
     TermEvent, TermSize,
 };
+pub use images::KittyImage;
+pub use placeholder::{ImageRun, PLACEHOLDER};
 pub use shell::{Shell, ShellKind, available_shells, default_shell};
 pub use snapshot::{CellColor, GridSnapshot, SnapshotCell, SnapshotCursor};
 

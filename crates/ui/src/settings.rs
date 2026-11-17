@@ -156,10 +156,18 @@ pub fn session_options(config: &Config) -> SessionOptions {
             Some(args) => Shell::with_args(program, args.iter().map(OsString::from).collect()),
             None => Shell::new(program),
         });
+    // Claude Code only sends Kitty graphics to kitty and Ghostty unless this is set. It is
+    // undocumented, so re-check it after Claude Code updates (board decision X3, p-muqdqhnjzfj5).
+    let env = if config.terminal.images {
+        vec![("CLAUDE_CODE_FORCE_TERMINAL_IMAGES".into(), "1".into())]
+    } else {
+        Vec::new()
+    };
     SessionOptions {
         shell,
         // A folder that is gone falls back to home instead of failing the spawn.
         cwd: config.shell.startup_dir.clone().filter(|dir| dir.is_dir()),
+        env,
         scrollback: config.terminal.scrollback,
         cursor_shape: cursor_shape(config),
         ..SessionOptions::default()

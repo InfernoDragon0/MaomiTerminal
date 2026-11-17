@@ -25,6 +25,10 @@ alacritty_terminal = "0.26"
 # Char widths for joining emoji clusters (same version alacritty_terminal uses).
 unicode-width = "0.2"
 portable-pty = "0.9"
+# Kitty graphics: base64 payloads, zlib (o=z) and PNG decoding (same image version gpui uses).
+base64 = "0.22"
+flate2 = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 async-channel = "2"
 which = "8"
 # Only the process API (cwd fallback); the default features pull in disks, networks and WMI.
