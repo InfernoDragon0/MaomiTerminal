@@ -4664,7 +4664,7 @@ dependencies = [
 
 [[package]]
 name = "maomi-app"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -4680,7 +4680,7 @@ dependencies = [
 
 [[package]]
 name = "maomi-config"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "etcetera",
  "serde",
@@ -4691,7 +4691,7 @@ dependencies = [
 
 [[package]]
 name = "maomi-git"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "async-io",
  "async-process",
@@ -4712,7 +4712,7 @@ dependencies = [
 
 [[package]]
 name = "maomi-ssh"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "async-channel",
  "futures",
@@ -4728,7 +4728,7 @@ dependencies = [
 
 [[package]]
 name = "maomi-term"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -4747,7 +4747,7 @@ dependencies = [
 
 [[package]]
 name = "maomi-ui"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -4771,7 +4771,7 @@ dependencies = [
 
 [[package]]
 name = "maomi-vault"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "age",
  "keyring",
@@ -4785,7 +4785,7 @@ dependencies = [
 
 [[package]]
 name = "maomi-workbench"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
