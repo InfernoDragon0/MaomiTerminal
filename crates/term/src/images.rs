@@ -371,7 +371,10 @@ mod tests {
         let mut store = ImageStore::new(true, true);
         assert_eq!(store.apply(&transmit_png(31, 2)), None);
         let image = store.get(31).unwrap();
-        assert_eq!((image.width, image.height, image.columns, image.rows), (1, 2, 4, 2));
+        assert_eq!(
+            (image.width, image.height, image.columns, image.rows),
+            (1, 2, 4, 2)
+        );
         assert_eq!(image.rgba.as_slice(), &[255, 0, 0, 255, 0, 255, 0, 128]);
     }
 
@@ -422,7 +425,8 @@ mod tests {
             ImageStore::new(true, true).apply(&command),
             Some(b"\x1b_Gi=3;OK\x1b\\".to_vec())
         );
-        let remote = String::from_utf8(ImageStore::new(false, true).apply(&command).unwrap()).unwrap();
+        let remote =
+            String::from_utf8(ImageStore::new(false, true).apply(&command).unwrap()).unwrap();
         assert!(remote.contains("EBADF"), "{remote}");
         assert!(path.exists(), "t=f leaves the file in place");
         let mut store = ImageStore::new(true, true);
@@ -483,7 +487,8 @@ mod tests {
     fn truncated_payload_is_refused() {
         let mut command = transmit_png(5, 0);
         command.truncated = true;
-        let reply = String::from_utf8(ImageStore::new(true, true).apply(&command).unwrap()).unwrap();
+        let reply =
+            String::from_utf8(ImageStore::new(true, true).apply(&command).unwrap()).unwrap();
         assert!(reply.contains("EFBIG"), "{reply}");
     }
 }

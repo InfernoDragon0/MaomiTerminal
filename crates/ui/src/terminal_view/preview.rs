@@ -7,10 +7,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::{
-    AnyElement, Bounds, ClipboardItem, Context, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Point, RenderImage,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    anchored, canvas, deferred, div, point, px, size,
+    AnyElement, Bounds, ClipboardItem, Context, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Point, RenderImage,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Window, anchored,
+    canvas, deferred, div, point, px, size,
 };
 use maomi_term::KittyImage;
 
@@ -135,7 +135,11 @@ impl TerminalView {
         .right(MARGIN)
         .bottom(TOOLBAR);
 
-        let zoom_label = if actual { "Fit to window" } else { "Zoom to 100%" };
+        let zoom_label = if actual {
+            "Fit to window"
+        } else {
+            "Zoom to 100%"
+        };
         let mut toolbar = div()
             .absolute()
             .bottom(px(16.))
@@ -144,19 +148,31 @@ impl TerminalView {
             .flex()
             .justify_center()
             .gap(px(8.))
-            .child(button("preview-zoom", zoom_label, p, cx, |this, window, cx| {
-                if let Some(preview) = &mut this.preview {
-                    preview.actual = !preview.actual;
-                    preview.pan = Point::default();
-                    preview.clamp_pan(window.scale_factor());
-                    cx.notify();
-                }
-            }))
-            .child(button("preview-copy", "Copy image", p, cx, |this, _, cx| {
-                if let Some(preview) = &this.preview {
-                    copy_image(&preview.image, cx);
-                }
-            }));
+            .child(button(
+                "preview-zoom",
+                zoom_label,
+                p,
+                cx,
+                |this, window, cx| {
+                    if let Some(preview) = &mut this.preview {
+                        preview.actual = !preview.actual;
+                        preview.pan = Point::default();
+                        preview.clamp_pan(window.scale_factor());
+                        cx.notify();
+                    }
+                },
+            ))
+            .child(button(
+                "preview-copy",
+                "Copy image",
+                p,
+                cx,
+                |this, _, cx| {
+                    if let Some(preview) = &this.preview {
+                        copy_image(&preview.image, cx);
+                    }
+                },
+            ));
         if preview.image.path.is_some() {
             toolbar = toolbar.child(button("preview-open", "Open file", p, cx, |this, _, cx| {
                 if let Some(path) = this.preview.as_ref().and_then(|v| v.image.path.clone()) {
@@ -181,7 +197,8 @@ impl TerminalView {
                         return;
                     };
                     let (area, drawn) = preview.geometry.get();
-                    let on_picture = area.contains(&event.position) && drawn.contains(&event.position);
+                    let on_picture =
+                        area.contains(&event.position) && drawn.contains(&event.position);
                     if on_picture {
                         preview.drag = Some(Drag {
                             from: event.position,
@@ -237,15 +254,15 @@ impl TerminalView {
             }))
             .child(picture)
             .child(toolbar)
-            .child(
-                div()
-                    .absolute()
-                    .top(px(12.))
-                    .right(px(16.))
-                    .child(button("preview-close", "\u{2715}", p, cx, |this, _, cx| {
-                        this.close_preview(cx);
-                    })),
-            );
+            .child(div().absolute().top(px(12.)).right(px(16.)).child(button(
+                "preview-close",
+                "\u{2715}",
+                p,
+                cx,
+                |this, _, cx| {
+                    this.close_preview(cx);
+                },
+            )));
 
         Some(
             deferred(anchored().position(point(px(0.), px(0.))).child(overlay))
@@ -288,7 +305,10 @@ fn copy_image(image: &KittyImage, cx: &mut Context<TerminalView>) {
         return;
     };
     let mut png = std::io::Cursor::new(Vec::new());
-    if buffer.write_to(&mut png, ::image::ImageFormat::Png).is_err() {
+    if buffer
+        .write_to(&mut png, ::image::ImageFormat::Png)
+        .is_err()
+    {
         return;
     }
     let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, png.into_inner());

@@ -129,7 +129,10 @@ pub(crate) fn layout_images(
             continue;
         };
         // Without c / r the placement is the image's own size in cells, as in kitty.
-        let device_cell = (f32::from(cell_width) * scale, f32::from(line_height) * scale);
+        let device_cell = (
+            f32::from(cell_width) * scale,
+            f32::from(line_height) * scale,
+        );
         let columns = match cached.columns {
             0 => (cached.width as f32 / device_cell.0).ceil().max(1.),
             c => c as f32,

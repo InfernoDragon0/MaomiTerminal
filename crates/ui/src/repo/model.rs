@@ -26,6 +26,10 @@ pub const CANCELLED: &str = "Cancelled.";
 /// status and log.
 const MAINTENANCE_DELAY: Duration = Duration::from_secs(2);
 
+/// Rows of the date-order preview shown while `--topo-order` is still working out its first
+/// commits (1.2 s on the Linux kernel even with a commit-graph; date order answers in ~0.1 s).
+const PREVIEW_ROWS: usize = 200;
+
 /// Build and dependency folders skipped by the watcher even when they are not gitignored: a
 /// build writes thousands of files there and each burst would refresh the status.
 const NOISY_DIRS: [&str; 2] = ["target", "node_modules"];
@@ -50,6 +54,7 @@ pub enum OpKind {
 }
 
 /// For toasts: the view that owns a window turns these into notifications.
+#[allow(dead_code)] // The Repo dock shows `op_error` instead; for the Repo tab.
 #[derive(Debug, Clone)]
 pub enum RepoEvent {
     OpFailed(SharedString),
@@ -73,6 +78,8 @@ pub struct LogPages {
     /// Each send asks the feed for one more page.
     want: Option<async_channel::Sender<()>>,
     task: Option<Task<()>>,
+    /// The first load's quick date-order rows (see [`PREVIEW_ROWS`]).
+    preview: Option<Task<()>>,
 }
 
 /// The parts of the repo state the log depends on.
@@ -413,6 +420,38 @@ impl RepoModel {
         self.log.exhausted = false;
         self.log.loading = true;
 
+        // First load only: a reload keeps showing the old rows until the new ones arrive.
+        self.log.preview = self.log.history.is_empty().then(|| {
+            let repo = self.repo.clone();
+            let pseudo = pseudo.clone();
+            let preview = LogQuery {
+                topo_order: false,
+                limit: Some(PREVIEW_ROWS),
+                ..query.clone()
+            };
+            let rows = cx.background_executor().spawn(async move {
+                let mut stream = repo.log_stream(&preview).ok()?;
+                let mut commits = Vec::new();
+                while let Some(batch) = stream.next_batch().await.ok()? {
+                    commits.extend(batch);
+                }
+                Some(commits)
+            });
+            cx.spawn(async move |this, cx| {
+                let Some(commits) = rows.await else { return };
+                _ = this.update(cx, |m, cx| {
+                    // Too late: the real graph already has rows.
+                    if !m.log.loading || m.log.pages > 0 || !m.log.history.is_empty() {
+                        return;
+                    }
+                    let mut history = History::with_pseudo(pseudo);
+                    history.extend(commits);
+                    m.log.history = history;
+                    cx.notify();
+                });
+            })
+        });
+
         let (want_tx, want_rx) = async_channel::unbounded::<()>();
         let (page_tx, page_rx) = async_channel::bounded::<Result<Vec<Commit>, GitError>>(1);
         let repo = self.repo.clone();
@@ -504,7 +543,12 @@ impl RepoModel {
 
     /// Runs a user operation (one at a time), then refreshes. Its error lands in
     /// [`Self::op_error`] and as a [`RepoEvent::OpFailed`]. False when another one is running.
-    pub fn run_op<F, Fut>(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>, op: F) -> bool
+    pub fn run_op<F, Fut>(
+        &mut self,
+        label: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+        op: F,
+    ) -> bool
     where
         F: FnOnce(CliRepo) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = maomi_git::Result<()>> + Send + 'static,
@@ -552,19 +596,30 @@ impl RepoModel {
     }
 
     pub fn stage(&mut self, paths: Vec<BString>, cx: &mut Context<Self>) -> bool {
-        self.run_op("Staging", cx, move |repo| async move { repo.stage(&paths).await })
+        self.run_op("Staging", cx, move |repo| async move {
+            repo.stage(&paths).await
+        })
     }
 
+    #[allow(dead_code)] // For the Repo tab.
     pub fn stage_all(&mut self, cx: &mut Context<Self>) -> bool {
-        self.run_op("Staging all", cx, |repo| async move { repo.stage_all().await })
+        self.run_op(
+            "Staging all",
+            cx,
+            |repo| async move { repo.stage_all().await },
+        )
     }
 
     pub fn unstage(&mut self, paths: Vec<BString>, cx: &mut Context<Self>) -> bool {
-        self.run_op("Unstaging", cx, move |repo| async move { repo.unstage(&paths).await })
+        self.run_op("Unstaging", cx, move |repo| async move {
+            repo.unstage(&paths).await
+        })
     }
 
     pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> bool {
-        self.run_op("Unstaging all", cx, |repo| async move { repo.unstage_all().await })
+        self.run_op("Unstaging all", cx, |repo| async move {
+            repo.unstage_all().await
+        })
     }
 
     /// Throws away changes to tracked files and deletes the untracked ones. The view confirms
@@ -594,7 +649,11 @@ impl RepoModel {
         push: bool,
         cx: &mut Context<Self>,
     ) -> bool {
-        let label = if push { "Committing and pushing" } else { "Committing" };
+        let label = if push {
+            "Committing and pushing"
+        } else {
+            "Committing"
+        };
         self.run_op(label, cx, move |repo| async move {
             if all {
                 repo.stage_all().await?;
@@ -608,11 +667,17 @@ impl RepoModel {
     }
 
     pub fn fetch(&mut self, cx: &mut Context<Self>) -> bool {
-        self.run_op("Fetching", cx, |repo| async move { repo.fetch(None, false).await })
+        self.run_op("Fetching", cx, |repo| async move {
+            repo.fetch(None, false).await
+        })
     }
 
     pub fn pull(&mut self, mode: PullMode, cx: &mut Context<Self>) -> bool {
-        self.run_op("Pulling", cx, move |repo| async move { repo.pull(mode).await })
+        self.run_op(
+            "Pulling",
+            cx,
+            move |repo| async move { repo.pull(mode).await },
+        )
     }
 
     pub fn push(&mut self, cx: &mut Context<Self>) -> bool {
@@ -643,7 +708,10 @@ fn summary(status: &Status) -> String {
     let branch = status.branch.head.as_deref().unwrap_or("detached HEAD");
     let mut out = format!("{branch} · {} changed", status.entries.len());
     if status.branch.ahead > 0 || status.branch.behind > 0 {
-        out.push_str(&format!(" · ↑{} ↓{}", status.branch.ahead, status.branch.behind));
+        out.push_str(&format!(
+            " · ↑{} ↓{}",
+            status.branch.ahead, status.branch.behind
+        ));
     }
     out
 }
@@ -699,7 +767,9 @@ mod tests {
         };
         if dirty {
             // One untracked file.
-            s.entries = maomi_git::parse::status::parse(b"? notes.md\0").unwrap().entries;
+            s.entries = maomi_git::parse::status::parse(b"? notes.md\0")
+                .unwrap()
+                .entries;
         }
         s
     }
@@ -731,10 +801,22 @@ mod tests {
     #[test]
     fn snapshot_changes_when_head_or_dirtiness_moves() {
         let a = LogSnapshot::new(LogScope::All, &status("abc", false), &[], &[]);
-        assert_eq!(a, LogSnapshot::new(LogScope::All, &status("abc", false), &[], &[]));
-        assert_ne!(a, LogSnapshot::new(LogScope::All, &status("def", false), &[], &[]));
-        assert_ne!(a, LogSnapshot::new(LogScope::All, &status("abc", true), &[], &[]));
-        assert_ne!(a, LogSnapshot::new(LogScope::Branch, &status("abc", false), &[], &[]));
+        assert_eq!(
+            a,
+            LogSnapshot::new(LogScope::All, &status("abc", false), &[], &[])
+        );
+        assert_ne!(
+            a,
+            LogSnapshot::new(LogScope::All, &status("def", false), &[], &[])
+        );
+        assert_ne!(
+            a,
+            LogSnapshot::new(LogScope::All, &status("abc", true), &[], &[])
+        );
+        assert_ne!(
+            a,
+            LogSnapshot::new(LogScope::Branch, &status("abc", false), &[], &[])
+        );
     }
 
     #[test]

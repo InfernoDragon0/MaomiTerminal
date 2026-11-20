@@ -89,6 +89,17 @@ pub fn build_commit_suggestion(
     ended_at: i64,
     plan_id: Option<&str>,
 ) -> Option<CommitSuggestion> {
+    // The id lands in the commit trailer, so a session id with spaces or newlines could add
+    // trailer lines of its own.
+    let session_id = one_line(session_id, 128);
+    let session_id = session_id.as_str();
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return None;
+    }
     let cards: Vec<SuggestionCard> = cards
         .iter()
         .map(|c| {
@@ -116,9 +127,7 @@ pub fn build_commit_suggestion(
             one_line(&first.title, COMMIT_TITLE_MAX)
         } else {
             let tail = format!(": {}", plural(tasks, "task"));
-            let room = COMMIT_TITLE_MAX
-                .saturating_sub(tail.chars().count())
-                .max(8);
+            let room = COMMIT_TITLE_MAX.saturating_sub(tail.chars().count()).max(8);
             format!("{}{tail}", one_line(&first.title, room))
         }
     } else {
@@ -127,7 +136,11 @@ pub fn build_commit_suggestion(
             t => t,
         };
         one_line(
-            &format!("{plan}: {} across {} cards", plural(tasks, "task"), cards.len()),
+            &format!(
+                "{plan}: {} across {} cards",
+                plural(tasks, "task"),
+                cards.len()
+            ),
             COMMIT_TITLE_MAX,
         )
     };
@@ -139,7 +152,10 @@ pub fn build_commit_suggestion(
             bullets.push(format!("- {} ({state})", c.title));
         } else {
             for t in &c.tasks_ticked {
-                bullets.push(format!("- {}", one_line(&format!("{}: {t}", c.title), BULLET_MAX)));
+                bullets.push(format!(
+                    "- {}",
+                    one_line(&format!("{}: {t}", c.title), BULLET_MAX)
+                ));
             }
         }
     }
@@ -244,7 +260,9 @@ fn ticks_of(activity: &[Activity], session: &str, plan: Option<&Plan>) -> Vec<Su
         }
     }
     for (id, change) in changes {
-        let Some(c) = cards.get_mut(&id) else { continue };
+        let Some(c) = cards.get_mut(&id) else {
+            continue;
+        };
         match change {
             Change::Tick(text, done) => match c.ticked.iter_mut().find(|(t, _)| *t == text) {
                 Some(entry) => entry.1 = done,
@@ -369,15 +387,32 @@ mod tests {
         assert_eq!((s.cards, s.tasks), (1, 2));
         assert_eq!(
             s.body,
-            format!("- Branch switcher: Menu\n- Branch switcher: Tests\n\nMaomi-Session: {SESSION}")
+            format!(
+                "- Branch switcher: Menu\n- Branch switcher: Tests\n\nMaomi-Session: {SESSION}"
+            )
         );
+    }
+
+    #[test]
+    fn session_ids_outside_the_safe_set_are_refused() {
+        let cards = [card("A", &["one"], true)];
+        for bad in ["", "a b", "a\nMaomi-Session: x", "a/b", "é"] {
+            assert!(
+                build_commit_suggestion("P", &cards, bad, 1, None).is_none(),
+                "{bad:?}"
+            );
+        }
+        assert!(build_commit_suggestion("P", &cards, "a.b_c-1", 1, None).is_some());
     }
 
     #[test]
     fn several_cards_sum_up_as_tasks_across_cards() {
         let s = build_commit_suggestion(
             "Repo tab",
-            &[card("A", &["one"], false), card("B", &["two", "three"], true)],
+            &[
+                card("A", &["one"], false),
+                card("B", &["two", "three"], true),
+            ],
             SESSION,
             1,
             Some("p-abc"),
@@ -395,8 +430,16 @@ mod tests {
         assert_eq!(done.tasks, 0);
         let mut review = card("Review me", &[], true);
         review.review = true;
-        assert!(build(&[review]).unwrap().body.starts_with("- Review me (in review)\n"));
-        assert_eq!(build(&[card("Big card", &["a"], false)]).unwrap().title, "Big card: 1 task");
+        assert!(
+            build(&[review])
+                .unwrap()
+                .body
+                .starts_with("- Review me (in review)\n")
+        );
+        assert_eq!(
+            build(&[card("Big card", &["a"], false)]).unwrap().title,
+            "Big card: 1 task"
+        );
     }
 
     #[test]
@@ -425,7 +468,10 @@ mod tests {
         let refs: Vec<&str> = tasks.iter().map(String::as_str).collect();
         let s = build(&[card("Card", &refs, true)]).unwrap();
         let lines: Vec<&str> = s.body.split('\n').collect();
-        assert_eq!(lines.iter().filter(|l| l.starts_with("- ")).count(), COMMIT_BODY_BULLETS);
+        assert_eq!(
+            lines.iter().filter(|l| l.starts_with("- ")).count(),
+            COMMIT_BODY_BULLETS
+        );
         assert_eq!(lines[COMMIT_BODY_BULLETS], "+3 more");
         assert_eq!(lines[lines.len() - 1], format!("Maomi-Session: {SESSION}"));
         assert_eq!(lines[lines.len() - 2], "");
@@ -482,13 +528,55 @@ mod tests {
         .unwrap();
         let cut = "Branch switcher with a long enough title that the activity summ…";
         let lines = [
-            line(10, SESSION, "m-a", "updateTask", &format!("task 'Menu' on '{cut}': done")),
-            line(20, SESSION, "m-a", "updateTask", &format!("task 'Wrong' on '{cut}': done")),
-            line(30, SESSION, "m-a", "updateTask", &format!("task 'Wrong' on '{cut}': not done")),
-            line(40, SESSION, "m-a", "updateTask", &format!("task 'Tests' on '{cut}': done, by x")),
-            line(50, SESSION, "m-a", "moveMilestone", &format!("moved '{cut}' to review")),
-            line(60, SESSION, "m-b", "updateTask", "task 'Spinner' on 'Fetch button': done"),
-            line(70, OTHER, "m-b", "updateTask", "task 'Foreign' on 'Fetch button': done"),
+            line(
+                10,
+                SESSION,
+                "m-a",
+                "updateTask",
+                &format!("task 'Menu' on '{cut}': done"),
+            ),
+            line(
+                20,
+                SESSION,
+                "m-a",
+                "updateTask",
+                &format!("task 'Wrong' on '{cut}': done"),
+            ),
+            line(
+                30,
+                SESSION,
+                "m-a",
+                "updateTask",
+                &format!("task 'Wrong' on '{cut}': not done"),
+            ),
+            line(
+                40,
+                SESSION,
+                "m-a",
+                "updateTask",
+                &format!("task 'Tests' on '{cut}': done, by x"),
+            ),
+            line(
+                50,
+                SESSION,
+                "m-a",
+                "moveMilestone",
+                &format!("moved '{cut}' to review"),
+            ),
+            line(
+                60,
+                SESSION,
+                "m-b",
+                "updateTask",
+                "task 'Spinner' on 'Fetch button': done",
+            ),
+            line(
+                70,
+                OTHER,
+                "m-b",
+                "updateTask",
+                "task 'Foreign' on 'Fetch button': done",
+            ),
         ];
         std::fs::write(dir.join("p-1.activity.jsonl"), lines.join("\n") + "\n").unwrap();
         std::fs::write(
@@ -518,7 +606,11 @@ mod tests {
         // Full card titles come from the plan; "Wrong" was unticked; the other session's tick is out.
         let menu = one_line(&format!("{LONG}: Menu"), BULLET_MAX);
         assert!(lines.contains(&format!("- {menu}").as_str()));
-        assert!(!lines.iter().any(|l| l.contains("Wrong") || l.contains("Foreign")));
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("Wrong") || l.contains("Foreign"))
+        );
         assert!(lines.contains(&"- Fetch button: Spinner"));
         assert_eq!(lines[lines.len() - 1], format!("Maomi-Session: {SESSION}"));
 
@@ -531,9 +623,15 @@ mod tests {
     #[test]
     fn none_for_unknown_session_plan_or_folder() {
         let dir = board();
-        assert_eq!(read_session_suggestion(&dir, "Demo", "nobody", None, 1, 0), None);
+        assert_eq!(
+            read_session_suggestion(&dir, "Demo", "nobody", None, 1, 0),
+            None
+        );
         assert_eq!(read_session_suggestion(&dir, "Demo", "", None, 1, 0), None);
-        assert_eq!(read_session_suggestion(&dir, "Demo", SESSION, Some("p-x"), 1, 0), None);
+        assert_eq!(
+            read_session_suggestion(&dir, "Demo", SESSION, Some("p-x"), 1, 0),
+            None
+        );
         assert_eq!(
             read_session_suggestion(&dir.join("missing"), "Demo", SESSION, None, 1, 0),
             None
@@ -546,7 +644,10 @@ mod tests {
         let dir = board();
         let later = read_session_suggestion(&dir, "Demo", SESSION, None, 100, 60).unwrap();
         assert_eq!(later.title, "Fetch button: 1 task");
-        assert_eq!(read_session_suggestion(&dir, "Demo", SESSION, None, 100, 1000), None);
+        assert_eq!(
+            read_session_suggestion(&dir, "Demo", SESSION, None, 100, 1000),
+            None
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -557,7 +658,10 @@ mod tests {
         assert_eq!(s.session_id, SESSION);
         assert_eq!(s.tasks, 3);
         assert_eq!(s.ended_at, 90);
-        assert_eq!(latest_session_suggestion(&dir.join("missing"), "Demo", 0), None);
+        assert_eq!(
+            latest_session_suggestion(&dir.join("missing"), "Demo", 0),
+            None
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

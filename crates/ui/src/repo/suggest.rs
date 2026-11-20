@@ -84,7 +84,8 @@ fn log_has_commit_for(log: &str, suggestion: &CommitSuggestion) -> bool {
     let ended_sec = suggestion.ended_at.div_euclid(1000);
     log.split('\x1e').any(|record| {
         let mut parts = record.trim().splitn(3, '\x1f');
-        let (Some(_oid), Some(when), Some(body)) = (parts.next(), parts.next(), parts.next()) else {
+        let (Some(_oid), Some(when), Some(body)) = (parts.next(), parts.next(), parts.next())
+        else {
             return false;
         };
         when.parse::<i64>().is_ok_and(|w| w >= ended_sec)
@@ -120,7 +121,8 @@ mod tests {
 
     #[test]
     fn another_sessions_trailer_or_a_substring_does_not_count() {
-        let log = record("a", 100, "Maomi-Session: s-2\n") + &record("b", 90, "see Maomi-Session: s-1 above\n");
+        let log = record("a", 100, "Maomi-Session: s-2\n")
+            + &record("b", 90, "see Maomi-Session: s-1 above\n");
         assert!(!log_has_commit_for(&log, &suggestion("s-1", 500_000)));
     }
 
@@ -146,6 +148,9 @@ mod tests {
 
     #[test]
     fn paths_compare_across_slash_styles() {
-        assert_eq!(path_key(Path::new("F:/a/b/")), path_key(Path::new("F:\\a\\b")));
+        assert_eq!(
+            path_key(Path::new("F:/a/b/")),
+            path_key(Path::new("F:\\a\\b"))
+        );
     }
 }

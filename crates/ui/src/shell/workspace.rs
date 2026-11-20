@@ -27,6 +27,8 @@ use super::drawer::{self, DragPreview};
 use super::hosts::{self, HostsEvent, HostsPanel};
 use super::mockups::{MockupsEvent, MockupsPage};
 use super::pane::{Pane, PaneEvent, display_path};
+use super::repo_dock::{RepoDock, RepoDockEvent};
+use super::repo_page::{RepoPage, RepoPageEvent};
 use super::settings_page::SettingsPage;
 use super::snippets::{self, SnippetsEvent, SnippetsPanel, TabChoice};
 use super::ssh;
@@ -52,6 +54,8 @@ enum Dock {
     Workbench,
     /// The focused pane's file tree.
     Files,
+    /// Git for the focused pane's repository.
+    Repo,
 }
 
 pub struct Workspace {
@@ -65,12 +69,17 @@ pub struct Workspace {
     hosts_panel: Option<Entity<HostsPanel>>,
     /// Created the first time the Workbench dock opens.
     workbench_panel: Option<Entity<WorkbenchPanel>>,
+    /// Created the first time the Repo dock opens.
+    repo_dock: Option<Entity<RepoDock>>,
     /// A Workbench plan's board replaces the panes (not the dock) while shown.
     show_board: bool,
     board_page: Option<Entity<BoardPage>>,
     /// A project's Mockup Studio replaces the panes while shown, like the board.
     show_mockups: bool,
     mockups_page: Option<Entity<MockupsPage>>,
+    /// The main Repo tab replaces the panes while shown; the Repo dock hides meanwhile.
+    show_repo: bool,
+    repo_page: Option<Entity<RepoPage>>,
     /// Floats over the centre; shows nothing until a card is opened.
     card_drawer: Entity<CardDrawer>,
     launch: LaunchOptions,
@@ -106,10 +115,13 @@ impl Workspace {
             snippets_panel: None,
             hosts_panel: None,
             workbench_panel: None,
+            repo_dock: None,
             show_board: false,
             board_page: None,
             show_mockups: false,
             mockups_page: None,
+            show_repo: false,
+            repo_page: None,
             card_drawer: cx.new(|cx| CardDrawer::new(window, cx)),
             launch,
             next_id: 0,
@@ -589,7 +601,52 @@ impl Workspace {
         if dock == Dock::Files {
             self.ensure_focused_drawer(window, cx);
         }
+        if dock == Dock::Repo && self.repo_dock.is_none() {
+            let panel = cx.new(|cx| RepoDock::new(window, cx));
+            let events = cx.subscribe_in(&panel, window, |ws, _, event, window, cx| {
+                ws.on_repo_dock_event(event, window, cx)
+            });
+            self._observers.push(events);
+            self.repo_dock = Some(panel);
+        }
+        self.sync_repo(cx);
         cx.notify();
+    }
+
+    /// Points the Repo dock at the focused pane's folder while it is shown; otherwise lets its
+    /// repo go (watcher and git processes stop).
+    fn sync_repo(&mut self, cx: &mut Context<Self>) {
+        let Some(dock) = self.repo_dock.clone() else {
+            return;
+        };
+        let shown = self.dock_open && self.dock == Dock::Repo;
+        let target = self.focused_pane().filter(|_| shown).and_then(|pane| {
+            let pane = pane.read(cx);
+            let dir = pane.cwd()?.to_path_buf();
+            Some((dir, SharedString::from(pane.shell_name().to_string())))
+        });
+        dock.update(cx, |dock, cx| match target {
+            Some((dir, source)) => dock.follow(&dir, source, cx),
+            None => dock.release(cx),
+        });
+    }
+
+    fn on_repo_dock_event(
+        &mut self,
+        event: &RepoDockEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            RepoDockEvent::OpenRepoTab { commit } => {
+                self.open_repo_page(commit.clone(), window, cx)
+            }
+            RepoDockEvent::Collapse => {
+                self.dock_open = false;
+                self.sync_repo(cx);
+                cx.notify();
+            }
+        }
     }
 
     /// The Files dock shows the focused pane's tree; a pane creates its tree on first use.
@@ -617,6 +674,46 @@ impl Workspace {
         if !(shown && !toggle) {
             self.show_dock(Dock::Files, window, cx);
         }
+    }
+
+    /// Shows the dock's repository in the centre, on `commit` or the working copy.
+    fn open_repo_page(
+        &mut self,
+        commit: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dock) = self.repo_dock.clone() else {
+            return;
+        };
+        let Some(model) = dock.read(cx).model(cx) else {
+            return;
+        };
+        let same = self
+            .repo_page
+            .as_ref()
+            .is_some_and(|page| *page.read(cx).model() == model);
+        match &self.repo_page {
+            Some(page) if same => page.update(cx, |page, cx| page.show(commit, cx)),
+            _ => {
+                let page = cx.new(|cx| RepoPage::new(model, &dock, commit, window, cx));
+                let events =
+                    cx.subscribe_in(&page, window, |ws, _, event, window, cx| match event {
+                        RepoPageEvent::Close => {
+                            if let Some(pane) = ws.focused_pane() {
+                                ws.focus_pane(&pane, window, cx);
+                            }
+                        }
+                    });
+                self._observers.push(events);
+                self.repo_page = Some(page);
+            }
+        }
+        self.show_settings = false;
+        self.show_board = false;
+        self.show_mockups = false;
+        self.show_repo = true;
+        cx.notify();
     }
 
     /// The plan's "where we left off" in the floating drawer.
@@ -683,6 +780,7 @@ impl Workspace {
         }
         self.show_board = true;
         self.show_mockups = false;
+        self.show_repo = false;
         cx.notify();
     }
 
@@ -713,6 +811,7 @@ impl Workspace {
         self.show_settings = false;
         self.show_board = false;
         self.show_mockups = true;
+        self.show_repo = false;
         cx.notify();
     }
 
@@ -723,6 +822,7 @@ impl Workspace {
 
     /// Points the Workbench dock at the focused terminal's project, when that project has a board.
     fn follow_focused_cwd(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_repo(cx);
         let (Some(panel), Some(dir)) = (self.workbench_panel.clone(), self.focused_cwd(cx)) else {
             return;
         };
@@ -891,10 +991,12 @@ impl Workspace {
         self.show_settings = false;
         self.show_board = false;
         self.show_mockups = false;
+        self.show_repo = false;
         if let Some(tab) = self.tab_of(pane) {
             self.active = tab;
             self.tabs[tab].focused = pane.clone();
         }
+        self.sync_repo(cx);
         // A detached pane takes keys in its own window; here it is only a placeholder.
         if !pane.read(cx).is_detached() {
             pane.focus_handle(cx).focus(window, cx);
@@ -907,6 +1009,7 @@ impl Workspace {
             && self.tabs[tab].focused != *pane
         {
             self.tabs[tab].focused = pane.clone();
+            self.sync_repo(cx);
             cx.notify();
         }
     }
@@ -1206,7 +1309,7 @@ impl Workspace {
     ) -> impl IntoElement {
         let tabs = self.tabs.iter().enumerate().map(|(i, tab)| {
             // Like Settings, a board in the centre leaves no tab active.
-            let on = i == self.active && !self.show_board && !self.show_mockups;
+            let on = i == self.active && !self.show_board && !self.show_mockups && !self.show_repo;
             let title: SharedString = tab.focused.read(cx).title().into();
             let id = tab.id;
             let (hover_bg, emph, x_hover) = (
@@ -1568,6 +1671,16 @@ impl Workspace {
                     true,
                 )
                 .on_click(cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Files, window, cx))),
+            )
+            .child(
+                rail_button(
+                    "rail-repo",
+                    Icon::new(gpui_kit::assets::IconName::GitBranch),
+                    "Repo",
+                    !self.show_settings && self.dock == Dock::Repo,
+                    true,
+                )
+                .on_click(cx.listener(|ws, _, window, cx| ws.show_dock(Dock::Repo, window, cx))),
             )
             .child(div().flex_1())
             .child(
@@ -2174,19 +2287,26 @@ impl Render for Workspace {
                             d.child(div().flex_1().min_w_0().min_h_0().child(page.clone()))
                         }
                         _ => d
-                            .when(self.dock_open, |d| match self.dock {
-                                Dock::Snippets if self.snippets_panel.is_some() => {
-                                    d.children(self.snippets_panel.clone())
-                                }
-                                Dock::Hosts if self.hosts_panel.is_some() => {
-                                    d.children(self.hosts_panel.clone())
-                                }
-                                Dock::Workbench if self.workbench_panel.is_some() => {
-                                    d.children(self.workbench_panel.clone())
-                                }
-                                Dock::Files => d.child(self.render_files_dock(p, cx)),
-                                _ => d.child(self.render_dock(p, cx)),
-                            })
+                            // The Repo tab shows everything the Repo dock does.
+                            .when(
+                                self.dock_open && !(self.show_repo && self.dock == Dock::Repo),
+                                |d| match self.dock {
+                                    Dock::Snippets if self.snippets_panel.is_some() => {
+                                        d.children(self.snippets_panel.clone())
+                                    }
+                                    Dock::Hosts if self.hosts_panel.is_some() => {
+                                        d.children(self.hosts_panel.clone())
+                                    }
+                                    Dock::Workbench if self.workbench_panel.is_some() => {
+                                        d.children(self.workbench_panel.clone())
+                                    }
+                                    Dock::Files => d.child(self.render_files_dock(p, cx)),
+                                    Dock::Repo if self.repo_dock.is_some() => {
+                                        d.children(self.repo_dock.clone())
+                                    }
+                                    _ => d.child(self.render_dock(p, cx)),
+                                },
+                            )
                             .child(
                                 div()
                                     .relative()
@@ -2198,7 +2318,10 @@ impl Render for Workspace {
                                         (_, Some(page)) if self.show_mockups => {
                                             d.child(page.clone())
                                         }
-                                        _ => d.p(px(6.)).children(centre),
+                                        _ => match &self.repo_page {
+                                            Some(page) if self.show_repo => d.child(page.clone()),
+                                            _ => d.p(px(6.)).children(centre),
+                                        },
                                     })
                                     .when(self.card_drawer.read(cx).is_open(), |d| {
                                         d.child(self.card_drawer.clone())

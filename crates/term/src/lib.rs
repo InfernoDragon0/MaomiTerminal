@@ -12,12 +12,12 @@ pub mod session;
 pub mod shell;
 pub mod snapshot;
 
+pub use images::KittyImage;
+pub use placeholder::{ImageRun, PLACEHOLDER};
 pub use session::{
     EventProxy, PromptState, PtySession, QueryPalette, RemoteControl, RemoteIo, SessionOptions,
     TermEvent, TermSize,
 };
-pub use images::KittyImage;
-pub use placeholder::{ImageRun, PLACEHOLDER};
 pub use shell::{Shell, ShellKind, available_shells, default_shell};
 pub use snapshot::{CellColor, GridSnapshot, SnapshotCell, SnapshotCursor};
 

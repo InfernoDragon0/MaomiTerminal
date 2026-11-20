@@ -505,9 +505,15 @@ impl PtySession {
         io.control.resize(size);
         let exit = io.exit;
         // Kitty `t=f` paths name files on the remote machine, so none are read here.
-        let started = start(io.reader, io.writer, None, size, &options, false, move || {
-            exit.recv().ok().flatten()
-        })?;
+        let started = start(
+            io.reader,
+            io.writer,
+            None,
+            size,
+            &options,
+            false,
+            move || exit.recv().ok().flatten(),
+        )?;
         Ok(Self {
             term: started.term,
             shared: started.shared,
@@ -839,7 +845,10 @@ fn start(
         palette: Mutex::new(QueryPalette::default()),
         input: input_tx,
         // A local Windows session runs behind ConPTY, which cannot carry graphics replies.
-        images: Mutex::new(ImageStore::new(local_files, !(cfg!(windows) && local_files))),
+        images: Mutex::new(ImageStore::new(
+            local_files,
+            !(cfg!(windows) && local_files),
+        )),
     });
 
     let config = term_config(options.scrollback, options.cursor_shape, options.osc52_copy);
