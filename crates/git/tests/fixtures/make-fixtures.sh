@@ -45,7 +45,7 @@ newrepo() {
     git -C "$dir" config core.ignorecase false
 }
 
-STATUS_ARGS=(--porcelain=v2 -z --branch --show-stash --untracked-files=all --ignore-submodules=none)
+STATUS_ARGS=(--porcelain=v2 -z --branch --show-stash --untracked-files=all --ignore-submodules=dirty)
 LOG_FORMAT='%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%cn%x1f%ce%x1f%cd%x1f%D%x1f%s%x1f%b'
 LOG_ARGS=(-z "--format=$LOG_FORMAT" --date=raw --decorate=full --no-color --no-show-signature)
 DIFF_ARGS=(--no-color --no-ext-diff --no-textconv -p -U3 --find-renames --submodule=short --src-prefix=a/ --dst-prefix=b/)
@@ -209,8 +209,9 @@ printf 'u\n' >"$(printf 'caf\xc3\xa9.md')"
 printf 'log\n' >debug.log
 printf 'obj\n' >build/out.o
 printf 'dirty\n' >>sub/s.txt
-git -c status.renames=copies status "${STATUS_ARGS[@]}" >"$OUT/status-work.bin"
-git status "${STATUS_ARGS[@]}" --ignored >"$OUT/status-ignored.bin"
+# The parser fixtures need a submodule entry, which the app's "dirty" setting hides here.
+git -c status.renames=copies status "${STATUS_ARGS[@]}" --ignore-submodules=none >"$OUT/status-work.bin"
+git status "${STATUS_ARGS[@]}" --ignore-submodules=none --ignored >"$OUT/status-ignored.bin"
 git diff "${DIFF_ARGS[@]}" -- sub >"$OUT/diff-submodule.bin"
 
 # ---- diff repo -----------------------------------------------------------------------------

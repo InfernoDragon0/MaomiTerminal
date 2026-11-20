@@ -174,8 +174,9 @@ impl RepoWatcher {
     }
 }
 
-/// Ignored directories (and files) git reports, relative to the root, using git's own rules.
-/// Directories come back collapsed (`target/` becomes the path `target`).
+/// Ignored directories (and files) git reports, relative to the root, using git's own rules,
+/// plus the submodules listed in `.gitmodules`. Directories come back collapsed (`target/`
+/// becomes the path `target`).
 pub async fn ignored_dirs(runner: &GitRunner, root: &Path) -> Result<Vec<PathBuf>> {
     let cmd = GitCommand::read(root).args([
         "status",
@@ -183,15 +184,45 @@ pub async fn ignored_dirs(runner: &GitRunner, root: &Path) -> Result<Vec<PathBuf
         "-z",
         "--ignored=matching",
         "--untracked-files=normal",
+        // See `status::ARGS`: a submodule's own status would run under its config.
+        "--ignore-submodules=dirty",
     ]);
     let out = runner.run(cmd).await?;
     let status = status::parse(&out)?;
-    Ok(status
+    let mut dirs: Vec<PathBuf> = status
         .entries
         .iter()
         .filter(|e| e.kind == EntryKind::Ignored)
         .map(|e| e.path.to_path_lossy().into_owned())
-        .collect())
+        .collect();
+    // The app's status hides edits inside a submodule, so they need no refresh either.
+    dirs.extend(submodule_paths(runner, root).await);
+    Ok(dirs)
+}
+
+/// `submodule.<name>.path` values from `.gitmodules`; empty when it is missing or unreadable.
+/// Reading the file with `--file` follows no includes and runs nothing.
+async fn submodule_paths(runner: &GitRunner, root: &Path) -> Vec<PathBuf> {
+    if !root.join(".gitmodules").is_file() {
+        return Vec::new();
+    }
+    let cmd = GitCommand::read(root).args([
+        "config",
+        "-z",
+        "--file",
+        ".gitmodules",
+        "--get-regexp",
+        r"^submodule\..*\.path$",
+    ]);
+    let Ok(out) = runner.run(cmd).await else {
+        return Vec::new();
+    };
+    // `-z` records are `key\nvalue\0`.
+    out.split(|&b| b == 0)
+        .filter_map(|record| record.split_once_str("\n").map(|(_, value)| value))
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_path_lossy().into_owned())
+        .collect()
 }
 
 /// Absolute git dir for a worktree root (`git rev-parse --absolute-git-dir`).

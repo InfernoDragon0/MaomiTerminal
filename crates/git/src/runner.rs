@@ -59,6 +59,38 @@ fn read_flags() -> [&'static str; 8] {
     ]
 }
 
+/// Global options for commands that must stay offline (reads, and background work other than
+/// auto-fetch). A partial clone's lazy fetch would run the repo's `remote.<name>.uploadpack`,
+/// which `-c` cannot override because its first value wins; refusing the transport stops it.
+/// Each per-protocol key beats `protocol.allow`, and the user's config may set any of them.
+const OFFLINE_FLAGS: &[&str] = &[
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "protocol.file.allow=never",
+    "-c",
+    "protocol.git.allow=never",
+    "-c",
+    "protocol.ssh.allow=never",
+    "-c",
+    "protocol.http.allow=never",
+    "-c",
+    "protocol.https.allow=never",
+    "-c",
+    "protocol.ftp.allow=never",
+    "-c",
+    "protocol.ftps.allow=never",
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "protocol.fd.allow=never",
+];
+
+/// Environment for offline commands. `GIT_ALLOW_PROTOCOL` set to a name no transport uses
+/// makes git ignore every `protocol.*.allow` key, covering remote helpers missing from
+/// [`OFFLINE_FLAGS`]. Git 2.40 ignores `GIT_NO_LAZY_FETCH`; newer git honours it.
+const OFFLINE_ENV: &[(&str, &str)] = &[("GIT_ALLOW_PROTOCOL", "none"), ("GIT_NO_LAZY_FETCH", "1")];
+
 /// Inherited variables removed from git's environment.
 const ENV_REMOVE: &[&str] = &[
     "GIT_DIR",
@@ -120,8 +152,10 @@ pub struct GitCommand {
     lfs_progress: Option<PathBuf>,
     /// Extra variables for this command only (editor overrides for continue / rebase).
     env: Vec<(OsString, OsString)>,
-    /// A write command nobody asked for (auto-fetch): hardened like a read.
+    /// A write command nobody asked for (auto-fetch, commit-graph upkeep): hardened like a read.
     background: bool,
+    /// A background command that may use the network (auto-fetch).
+    network: bool,
     /// Stdout bytes kept; past that the child is killed and the output is `truncated`.
     max_stdout: Option<usize>,
 }
@@ -147,6 +181,7 @@ impl GitCommand {
             lfs_progress: None,
             env: Vec::new(),
             background: false,
+            network: false,
             max_stdout: None,
         }
     }
@@ -215,10 +250,18 @@ impl GitCommand {
         self
     }
 
-    /// Marks a write command the user didn't start (auto-fetch): it gets the read hardening
-    /// (no hooks, no fsmonitor) and the repo-local config overrides of [`crate::guard`].
+    /// Marks a write command the user didn't start (auto-fetch, commit-graph upkeep): it gets
+    /// the read hardening (no hooks, no fsmonitor, no transports unless [`Self::network`]) and
+    /// the repo-local config overrides of [`crate::guard`].
     pub fn background(mut self) -> Self {
         self.background = true;
+        self
+    }
+
+    /// Lets a [`Self::background`] command reach remotes. Without it, background commands are
+    /// as offline as reads.
+    pub fn network(mut self) -> Self {
+        self.network = true;
         self
     }
 
@@ -231,6 +274,12 @@ impl GitCommand {
     /// Read or background: repo-local config must not pick programs to run.
     fn guarded(&self) -> bool {
         self.mode == Mode::Read || self.background
+    }
+
+    /// Reads and background upkeep never contact a remote; user-started commands and
+    /// auto-fetch may.
+    fn offline(&self) -> bool {
+        self.mode == Mode::Read || (self.background && !self.network)
     }
 
     pub fn stdin(mut self, input: Vec<u8>) -> Self {
@@ -274,6 +323,12 @@ impl GitCommand {
         if self.guarded() {
             cmd.args(read_flags());
             cmd.env("GIT_OPTIONAL_LOCKS", "0");
+        }
+        if self.offline() {
+            cmd.args(OFFLINE_FLAGS);
+            for (key, value) in OFFLINE_ENV {
+                cmd.env(key, value);
+            }
         }
         cmd.args(&self.args).current_dir(&self.cwd);
         harden_std_command(&mut cmd);

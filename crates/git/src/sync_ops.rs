@@ -178,7 +178,7 @@ impl CliRepo {
     pub async fn fetch_background(&self, prune: bool) -> Result<()> {
         let mut first_error = None;
         for remote in self.remotes().await? {
-            let cmd = fetch_command(self.sync_cmd().background(), prune)
+            let cmd = fetch_command(self.sync_cmd().background().network(), prune)
                 .args([
                     "--no-recurse-submodules",
                     "--upload-pack=git-upload-pack",

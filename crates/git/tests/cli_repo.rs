@@ -251,7 +251,10 @@ fn log_streams_in_batches() {
         total += batch.len();
     }
     assert_eq!(total, 1200);
-    assert_eq!(sizes, vec![maomi_git::cli::LOG_BATCH; 1200 / maomi_git::cli::LOG_BATCH]);
+    assert_eq!(
+        sizes,
+        vec![maomi_git::cli::LOG_BATCH; 1200 / maomi_git::cli::LOG_BATCH]
+    );
 }
 
 #[test]

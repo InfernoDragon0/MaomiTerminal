@@ -15,6 +15,7 @@ gpui-kit.workspace = true
 maomi-ui.workspace = true
 maomi-term.workspace = true
 maomi-config.workspace = true
+maomi-git.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

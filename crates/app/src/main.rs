@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use maomi_config::Layout;
+use maomi_git::redact::{self, RedactingWriter};
 use maomi_ui::shell::{self, LaunchOptions};
 use tracing_subscriber::EnvFilter;
 
@@ -18,7 +19,10 @@ fn main() {
         .with_env_filter(
             EnvFilter::try_from_env("MAOMITERMINAL_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        // Log lines may quote git output or errors; mask URL credentials and known tokens.
+        .with_writer(|| RedactingWriter::new(std::io::stdout()))
         .init();
+    redact::install_panic_hook();
     install_crash_log();
 
     let (config, err) = maomi_config::Config::load_or_default();
@@ -60,8 +64,9 @@ fn main() {
 const CRASH_LOG_MAX: u64 = 1024 * 1024;
 
 /// Appends every panic (message, source location, backtrace) to `crash.log` in the cache
-/// folder, then runs the default hook. A panic inside a window callback aborts the process, and
-/// release builds have no console, so this is the only trace it leaves.
+/// folder, then runs the previous hook (maomi-git's redacted report). A panic inside a window
+/// callback aborts the process, and release builds have no console, so this is the only trace
+/// it leaves. The entry is redacted because a panic message can quote a URL with a token.
 fn install_crash_log() {
     let Ok(path) = maomi_config::crash_log_path() else {
         return;
@@ -76,6 +81,7 @@ fn install_crash_log() {
             "--- panic at unix time {at}, v{} ---\n{info}\n{backtrace}\n\n",
             env!("CARGO_PKG_VERSION")
         );
+        let entry = redact::redact(&entry);
         let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > CRASH_LOG_MAX);
         if let Some(dir) = path.parent() {
             _ = std::fs::create_dir_all(dir);

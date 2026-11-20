@@ -1,4 +1,8 @@
 //! `git status --porcelain=v2 -z --branch --show-stash --untracked-files=all` parser.
+//!
+//! `--ignore-submodules=dirty`: checking a submodule's working tree means running `git status`
+//! inside it, under the submodule's own config, where the read guard can't reach (its clean
+//! filters would run). Submodules still show when their checked-out commit changes.
 
 use bstr::{BString, ByteSlice};
 
@@ -11,7 +15,7 @@ pub const ARGS: &[&str] = &[
     "--branch",
     "--show-stash",
     "--untracked-files=all",
-    "--ignore-submodules=none",
+    "--ignore-submodules=dirty",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

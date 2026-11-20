@@ -3,4 +3,4 @@
 --branch
 --show-stash
 --untracked-files=all
---ignore-submodules=none
+--ignore-submodules=dirty

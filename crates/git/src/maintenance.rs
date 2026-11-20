@@ -63,7 +63,9 @@ impl CliRepo {
             .filter_map(|p| std::fs::metadata(p).ok())
             .map(|m| m.len())
             .sum();
-        let mut cmd = GitCommand::write(self.root()).args([
+        // Nobody asked for this write, so it gets the read guard: no hooks, no programs from
+        // repo config, and no lazy fetch from a promisor remote (which would run its uploadpack).
+        let mut cmd = GitCommand::write(self.root()).background().args([
             "commit-graph",
             "write",
             "--reachable",
